@@ -1,0 +1,930 @@
+from __future__ import annotations
+
+import asyncio
+import gzip
+import hashlib
+import io
+import json
+import random
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import aiohttp
+import logging
+import Levenshtein
+
+from .request_utils import HEADERS, OPENALEX_REQUEST_GATE, OpenAlexBudgetExceeded, OpenAlexRateLimitExceeded, SessionManager, is_openalex_budget_payload, raise_openalex_error
+from .tool_config import ToolConfig
+from .utils import normalize_text, valid_check
+
+
+OPENALEX_SELECT = "id,title,cited_by_count,counts_by_year,publication_date,created_date,abstract_inverted_index,authorships"
+URL_DOMAIN = "https://openalex.org/"
+OPENALEX_API_URL = "https://api.openalex.org"
+OPENALEX_CONTENT_URL = "https://content.openalex.org"
+FREE_CREDITS_PER_DAY = 10000
+OPENALEX_MAX_REQUESTS_PER_SECOND = 30.0
+DEFAULT_SEARCH_KEY = "default.search"
+TRANSIENT_EXCEPTION_TYPES = (
+    aiohttp.ClientError,
+    asyncio.TimeoutError,
+    aiohttp.ServerDisconnectedError,
+    json.JSONDecodeError,
+    AssertionError,
+    KeyError,
+)
+
+
+def index_to_abstract(indexes: dict | None):
+    if not indexes:
+        return None
+    abstract_length = max(v[-1] for v in indexes.values())
+    abstract = ["" for _ in range(abstract_length + 1)]
+    for token, positions in indexes.items():
+        for i in positions:
+            abstract[i] = token
+    return re.sub(r"\s+", " ", " ".join(abstract)).strip()
+
+
+@dataclass
+class CredentialState:
+    label: str
+    api_key: str | None
+    credits_remaining: int
+    cooling_until: datetime | None = None
+    initialized: bool = False
+
+    @property
+    def requires_api_key(self) -> bool:
+        return self.api_key is not None
+
+    def is_available(self, estimated_cost: int = 0) -> bool:
+        if self.cooling_until is not None and datetime.now(UTC) < self.cooling_until:
+            return False
+        return self.credits_remaining >= max(0, estimated_cost)
+
+
+class OpenAlex:
+    def __init__(self, config: ToolConfig):
+        self.config = config
+        self._init_lock = asyncio.Lock()
+        self._state_lock = asyncio.Lock()
+        self._initialized = False
+        self.request_count = 0
+        self.request_gate = OPENALEX_REQUEST_GATE
+        self.request_gate.configure(
+            requests_per_second=min(
+                float(getattr(config, "openalex_requests_per_second", OPENALEX_MAX_REQUESTS_PER_SECOND) or 0.0),
+                OPENALEX_MAX_REQUESTS_PER_SECOND,
+            ),
+            enabled=getattr(config, "openalex_rate_limit_enabled", True),
+        )
+        self.no_key_state = CredentialState("anonymous", None, FREE_CREDITS_PER_DAY, initialized=True)
+        self.api_key_states = [
+            CredentialState(f"api_key_{idx}", api_key, 0, initialized=False)
+            for idx, api_key in enumerate(config.openalex_api_keys or [], 1)
+            if str(api_key).strip()
+        ]
+
+    async def ensure_ready(self):
+        """Initialize OpenAlex credential state."""
+        if self._initialized: return
+        async with self._init_lock:
+            if self._initialized: return
+            for state in self.api_key_states:
+                try:
+                    state.credits_remaining = await self.get_balance(state.api_key)
+                    state.initialized = True
+                except Exception as e:
+                    state.credits_remaining = 0
+                    state.cooling_until = self._next_utc_midnight()
+                    state.initialized = True
+            self._initialized = True
+
+    async def get_balance(self, api_key: str) -> int:
+        session = SessionManager.get()
+        params = {"api_key": api_key}
+        last_exc = None
+        for attempt in range(3):
+            try:
+                async with self.request_gate.throttle():
+                    self.request_count += 1
+                    async with session.get(
+                        f"{OPENALEX_API_URL}/rate-limit",
+                        headers=HEADERS,
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        text = await resp.text()
+                        payload = json.loads(text)
+                        if resp.status >= 400:
+                            raise_openalex_error(payload, status=resp.status, headers=dict(resp.headers))
+                            resp.raise_for_status()
+                        return int((payload.get("rate_limit") or {}).get("credits_remaining", 0))
+            except Exception as exc:
+                last_exc = exc
+                if not self._is_transient_error(exc) or attempt == 2:
+                    raise
+                await asyncio.sleep(min(10, 2 ** attempt))
+        raise last_exc
+    
+    def _next_utc_midnight(self) -> datetime:
+        """Return the next UTC midnight when OpenAlex free credits reset."""
+        now = datetime.now(UTC)
+        tomorrow = (now + timedelta(days=1)).date()
+        return datetime.combine(tomorrow, datetime.min.time(), tzinfo=UTC)
+
+    async def _refresh_daily_state(self, state: CredentialState):
+        now = datetime.now(UTC)
+        if state.cooling_until is None or now < state.cooling_until:
+            return
+        if state.api_key is None:
+            state.credits_remaining = FREE_CREDITS_PER_DAY
+            state.cooling_until = None
+            return
+        try:
+            state.credits_remaining = await self.get_balance(state.api_key)
+            state.cooling_until = None if state.credits_remaining > 0 else self._next_utc_midnight()
+        except Exception:
+            state.credits_remaining = 0
+            state.cooling_until = self._next_utc_midnight()
+
+    async def _choose_credential(self, estimated_cost: int, require_api_key: bool = False) -> CredentialState:
+        await self.ensure_ready()
+        # states = ([] if require_api_key else [self.no_key_state]) + self.api_key_states
+        states = self.api_key_states
+        refresh_states = []
+        async with self._state_lock:
+            for state in states:
+                if state.cooling_until is not None and datetime.now(UTC) >= state.cooling_until:
+                    if state.api_key is None:
+                        state.credits_remaining = FREE_CREDITS_PER_DAY
+                        state.cooling_until = None
+                    else:
+                        refresh_states.append(state)
+                if state.is_available(estimated_cost): return state
+
+        for state in refresh_states:
+            try:
+                credits_remaining = await self.get_balance(state.api_key)
+                cooling_until = None if credits_remaining > 0 else self._next_utc_midnight()
+            except OpenAlexRateLimitExceeded:
+                raise
+            except Exception:
+                credits_remaining = 0
+                cooling_until = self._next_utc_midnight()
+            async with self._state_lock:
+                state.credits_remaining = credits_remaining
+                state.cooling_until = cooling_until
+                if state.is_available(estimated_cost): return state
+
+        if self.api_key_states:
+            for state in self.api_key_states:
+                try:
+                    credits_remaining = await self.get_balance(state.api_key)
+                except OpenAlexRateLimitExceeded:
+                    raise
+                except Exception:
+                    continue
+                async with self._state_lock:
+                    self._update_balance_state(state, credits_remaining)
+                    if state.is_available(estimated_cost): return state
+        raise OpenAlexBudgetExceeded({"message": "No OpenAlex credential has remaining credits"})
+
+    def _estimate_search_cost(self, search: str, filter_value: list[tuple] | dict | None) -> int:
+        return 10 if (search or self._filter_has_search_key(filter_value)) else 1
+
+    def _payload_int(self, payload: dict | None, key: str) -> int | None:
+        try:
+            value = (payload or {}).get(key)
+            return None if value is None else int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _mark_exhausted(self, state: CredentialState, payload: dict | None = None):
+        state.credits_remaining = 0
+        state.cooling_until = self._next_utc_midnight()
+
+    def _update_balance_state(self, state: CredentialState, credits_remaining: int):
+        state.credits_remaining = max(0, int(credits_remaining))
+        state.cooling_until = None if state.credits_remaining > 0 else self._next_utc_midnight()
+
+    def _update_state_from_error_payload(self, state: CredentialState, payload: dict | None):
+        credits_remaining = self._payload_int(payload, "creditsRemaining")
+        if credits_remaining is not None:
+            self._update_balance_state(state, credits_remaining)
+
+    async def _confirm_budget_exhausted(
+        self,
+        state: CredentialState,
+        payload: dict | None,
+        required_credits: int = 0,
+    ) -> bool:
+        required_credits = max(1, self._payload_int(payload, "creditsRequired") or required_credits or 1)
+        if state.api_key is not None:
+            credits_remaining = await self.get_balance(state.api_key)
+            async with self._state_lock:
+                self._update_balance_state(state, credits_remaining)
+            return credits_remaining < required_credits
+
+        async with self._state_lock:
+            self._update_state_from_error_payload(state, payload)
+        return is_openalex_budget_payload(payload) and state.credits_remaining < required_credits
+
+    def _deduct_credits(self, state: CredentialState, credits: int):
+        if credits <= 0: return
+        state.credits_remaining = max(0, state.credits_remaining - credits)
+        if state.credits_remaining == 0: state.cooling_until = self._next_utc_midnight()
+
+    def _extract_cost_credits(self, payload: dict) -> int:
+        meta = payload.get("meta") or {}
+        cost_usd = meta.get("cost_usd")
+        if cost_usd is None: return 0
+        return max(0, int(round(float(cost_usd) * 10000)))
+
+    def _is_transient_error(self, exc: BaseException) -> bool:
+        if isinstance(exc, OpenAlexBudgetExceeded): return False
+        if isinstance(exc, OpenAlexRateLimitExceeded): return True
+        if isinstance(exc, aiohttp.ClientResponseError): return exc.status not in {400, 401, 403, 404}
+        return isinstance(exc, TRANSIENT_EXCEPTION_TYPES)
+
+    def _rate_limit_sleep_seconds(self, exc: OpenAlexRateLimitExceeded) -> float:
+        retry_after = getattr(exc, "retry_after", None)
+        try:
+            if retry_after is not None:
+                return max(0.0, min(60.0, float(retry_after)))
+        except (TypeError, ValueError):
+            pass
+        return random.random() + 1
+
+    def _normalize_filter_search_values(self, filter_value: list[tuple] | dict | None) -> list[tuple] | dict | None:
+        if not filter_value:
+            return filter_value
+        items = list(filter_value.items()) if isinstance(filter_value, dict) else list(filter_value)
+        normalized = []
+        for key, value in items:
+            key = str(key)
+            if key.endswith(".search") and isinstance(value, str) and re.search(r"\b(?:AND|OR)\b", value, flags=re.IGNORECASE):
+                normalized.extend((key, block) for block in to_openalex(value))
+            else:
+                normalized.append((key, value))
+        return normalized
+    def _format_filter(self, filter_value: list[tuple] | dict | None) -> str | None:
+        """Format dict or dict.items style filters for OpenAlex."""
+        if not filter_value: return
+        if isinstance(filter_value, dict): filter_value = list(filter_value.items())
+        normalized = []
+        for key, value in filter_value:
+            if isinstance(value, (list, tuple, set)):
+                value = "|".join(str(item) for item in value if item is not None)
+            normalized.append((str(key), value))
+        return ",".join(f"{key}:{value}" for key, value in normalized)
+
+    def _normalize_openalex_id(self, value: str) -> str:
+        """Strip the OpenAlex URL prefix from an id."""
+        return (value or "").replace(URL_DOMAIN, "").strip()
+
+    def _normalize_work(self, paper: dict) -> dict:
+        """Normalize an OpenAlex work into the local paper shape."""
+        paper = dict(paper or {})
+        if not paper.get("title"): return {}
+        if paper.get("id"): paper["id"] = self._normalize_openalex_id(paper["id"])
+        paper["title"] = re.sub(r"\s+", " ", paper['title'].replace("\\", " "))
+        if "abstract_inverted_index" in paper:
+            paper["abstract"] = index_to_abstract(paper["abstract_inverted_index"])
+            del paper["abstract_inverted_index"]
+        if paper.get("publication_date") is None and paper.get("created_date"):
+            paper["publication_date"] = paper["created_date"]
+        if "created_date" in paper: paper.pop("created_date", None)
+        # paper["referenced_works"] = [
+        #     self._normalize_openalex_id(work_id)
+        #     for work_id in paper.get("referenced_works", []) or []
+        # ]
+        paper["authorships"] = self._normalize_authorships(paper.get("authorships", []))
+        if paper.get("id") and not paper.get("ids"):
+            paper["ids"] = [paper["id"]]
+        return paper
+
+    def _normalize_authorships(self, authorships: list[dict] | list[str] | None) -> list[str]:
+        """Normalize OpenAlex authorship records into author names."""
+        authors = []
+        for item in authorships or []:
+            if isinstance(item, str): name = item
+            elif isinstance(item, dict):
+                author = item.get("author") or {}
+                name = author.get("display_name") or ""
+            else:
+                name = ""
+            name = re.sub(r"\s+", " ", name or "").strip()
+            if name: authors.append(name)
+        return list(dict.fromkeys(authors))
+
+    def _wrap_search_results(self, payload: dict) -> dict:
+        results = payload.get("results", []) if isinstance(payload, dict) else []
+        raw_result_count = len(results)
+        normalized = [paper for item in results if (paper := self._normalize_work(item))]
+        return {
+            "count": payload.get("meta", {}).get("count", len(normalized)),
+            "results": normalized,
+            "_raw_result_count": raw_result_count,
+        }
+
+    def _paper_year(self, paper: dict) -> int | None:
+        publication_date = paper.get("publication_date") or ""
+        if isinstance(publication_date, str) and len(publication_date) >= 4 and publication_date[:4].isdigit():
+            return int(publication_date[:4])
+        return None
+
+    def _same_work(self, left: dict, right: dict) -> bool:
+        """Detect duplicate works by title, authors, and publication year."""
+        left_title = normalize_text(left.get("title", ""))
+        right_title = normalize_text(right.get("title", ""))
+        if not left_title or not right_title: return False
+        max_title_len = max(len(left_title), len(right_title), 1)
+        if Levenshtein.distance(left_title, right_title) > max(1, int(0.1 * max_title_len)):
+            return False
+
+        left_authors = {normalize_text(author) for author in left.get("authorships", []) if normalize_text(author)}
+        right_authors = {normalize_text(author) for author in right.get("authorships", []) if normalize_text(author)}
+        if left_authors and right_authors:
+            overlap = len(left_authors & right_authors) / max(1, min(len(left_authors), len(right_authors)))
+            if overlap < 0.8:
+                return False
+
+        left_year = self._paper_year(left)
+        right_year = self._paper_year(right)
+        if left_year is not None and right_year is not None and abs(left_year - right_year) > 1:
+            return False
+        return True
+
+    def _minhash_buckets(self, title: str, num_hashes: int = 24, band_size: int = 4) -> list[tuple[int, tuple[int, ...]]]:
+        tokens = set(re.findall(r"[a-z0-9]+", normalize_text(title)))
+        if not tokens:
+            tokens = {normalize_text(title)}
+        signature = []
+        for seed in range(num_hashes):
+            values = []
+            for token in tokens:
+                digest = hashlib.blake2b(f"{seed}:{token}".encode("utf-8"), digest_size=8).hexdigest()
+                values.append(int(digest, 16))
+            signature.append(min(values) if values else 0)
+        return [
+            (band_idx, tuple(signature[band_idx: band_idx + band_size]))
+            for band_idx in range(0, num_hashes, band_size)
+        ]
+
+    def merge_duplicate_works(self, papers: list[dict], original_title: str = "") -> dict | None:
+        merged = self.deduplicate_works(papers, original_title=original_title)
+        if not merged: return None
+        if len(merged) == 1: return merged[0]
+        return self._merge_work_cluster(merged, original_title)
+
+    def _merge_work_cluster(self, papers: list[dict], original_title: str = "") -> dict:
+        base = max(papers, key=lambda paper: paper.get("cited_by_count", 0) or 0)
+        merged = dict(base)
+        ids, authors, locations, seen_locations = [], [], [], set()
+        for paper in papers:
+            ids.extend(paper.get("ids") or ([paper["id"]] if paper.get("id") else []))
+            authors.extend(paper.get("authorships", []) or [])
+            for location in paper.get("locations", []) or []:
+                key = json.dumps(location, sort_keys=True, ensure_ascii=False) if isinstance(location, dict) else str(location)
+                if key not in seen_locations:
+                    seen_locations.add(key)
+                    locations.append(location)
+
+        base_id = base.get("id")
+        ids = list(dict.fromkeys(([base_id] if base_id else []) + ids))
+        merged["ids"] = ids
+        if ids: merged["id"] = ids[0]
+        merged["authorships"] = list(dict.fromkeys(authors))
+        if locations:
+            merged["locations"] = locations
+
+        dates = [paper.get("publication_date") for paper in papers if paper.get("publication_date")]
+        if dates:
+            merged["publication_date"] = min(dates)
+
+        title_anchor = original_title or papers[0].get("title", "")
+        merged["title"] = min(
+            (paper.get("title", "") for paper in papers if paper.get("title")),
+            key=lambda value: Levenshtein.distance(normalize_text(title_anchor), normalize_text(value)),
+        )
+        cited_source = max(papers, key=lambda paper: paper.get("cited_by_count", 0) or 0)
+        merged["cited_by_count"] = cited_source.get("cited_by_count", 0) or 0
+        merged["counts_by_year"] = cited_source.get("counts_by_year", []) or []
+        return merged
+
+    def deduplicate_works(self, papers: list[dict], original_title: str = "") -> list[dict]:
+        papers = [dict(paper) for paper in papers if paper and paper.get("title")]
+        if not papers: return []
+
+        parent = list(range(len(papers)))
+
+        def find(idx: int) -> int:
+            while parent[idx] != idx:
+                parent[idx] = parent[parent[idx]]
+                idx = parent[idx]
+            return idx
+
+        def union(left: int, right: int):
+            root_left, root_right = find(left), find(right)
+            if root_left != root_right:
+                parent[root_right] = root_left
+
+        buckets = {}
+        for idx, paper in enumerate(papers):
+            for bucket in self._minhash_buckets(paper.get("title", "")):
+                buckets.setdefault(bucket, []).append(idx)
+        for indexes in buckets.values():
+            for pos, left in enumerate(indexes):
+                for right in indexes[pos + 1:]:
+                    if self._same_work(papers[left], papers[right]):
+                        union(left, right)
+
+        clusters = {}
+        for idx in range(len(papers)):
+            clusters.setdefault(find(idx), []).append(papers[idx])
+        merged = [self._merge_work_cluster(cluster, original_title) for cluster in clusters.values()]
+        return merged
+
+    def _filter_has_search_key(self, filter_value: list[tuple] | dict | None) -> bool:
+        if not filter_value: return False
+        items = filter_value.items() if isinstance(filter_value, dict) else filter_value
+        return any(str(key).endswith(".search") for key, _ in items)
+
+    async def _single_json_request(self, url: str, params: dict[str, Any]) -> dict:
+        session = SessionManager.get()
+        while True:
+            try:
+                async with self.request_gate.throttle():
+                    self.request_count += 1
+                    async with session.get(
+                        url,
+                        headers=HEADERS,
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        text = await resp.text()
+                        payload = json.loads(text)
+                        if resp.status >= 400:
+                            raise_openalex_error(payload, status=resp.status, headers=dict(resp.headers))
+                            resp.raise_for_status()
+                        return payload
+            except OpenAlexRateLimitExceeded:
+                raise
+            except Exception as exc:
+                print(f"Endpoint {url} Error {type(exc)} {exc}")
+                if not self._is_transient_error(exc): raise
+                await asyncio.sleep(random.random() + 1)
+
+    async def _single_bytes_request(self, url: str, params: dict[str, Any]) -> bytes:
+        session = SessionManager.get()
+        last_exc = None
+        for attempt in range(3):
+            try:
+                async with self.request_gate.throttle():
+                    self.request_count += 1
+                    async with session.get(
+                        url,
+                        headers=HEADERS,
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        content = await resp.read()
+                        if resp.status >= 400:
+                            try:
+                                payload = json.loads(content.decode("utf-8"))
+                            except Exception:
+                                payload = {"raw_text": content.decode("utf-8", errors="ignore")}
+                            raise_openalex_error(payload, status=resp.status, headers=dict(resp.headers))
+                            resp.raise_for_status()
+                        return content
+            except Exception as exc:
+                last_exc = exc
+                if not self._is_transient_error(exc) or attempt == 2:
+                    raise
+                await asyncio.sleep(min(10, 2 ** attempt))
+        raise last_exc
+    
+    async def _request_json(
+        self,
+        url: str,
+        params: dict[str, Any],
+        estimated_cost: int = 0,
+        fixed_cost: int | None = None,
+        require_api_key: bool = False,
+    ) -> tuple[dict, CredentialState]:
+        use_api_key = require_api_key
+        while True:
+            try:
+                credential = await self._choose_credential(estimated_cost, require_api_key=use_api_key)
+            except OpenAlexRateLimitExceeded as exc:
+                await asyncio.sleep(self._rate_limit_sleep_seconds(exc))
+                continue
+            request_params = dict(params)
+            if credential.api_key is not None:
+                request_params["api_key"] = credential.api_key
+            try:
+                payload = await self._single_json_request(url, request_params)
+            except OpenAlexRateLimitExceeded as exc:
+                if credential.api_key is None and self.api_key_states:
+                    use_api_key = True
+                await asyncio.sleep(self._rate_limit_sleep_seconds(exc))
+                continue
+            except OpenAlexBudgetExceeded as exc:
+                try:
+                    exhausted = await self._confirm_budget_exhausted(
+                        credential,
+                        exc.payload,
+                        fixed_cost if fixed_cost is not None else estimated_cost,
+                    )
+                except OpenAlexRateLimitExceeded as rate_exc:
+                    await asyncio.sleep(self._rate_limit_sleep_seconds(rate_exc))
+                    continue
+                if exhausted:
+                    continue
+                await asyncio.sleep(self._rate_limit_sleep_seconds(OpenAlexRateLimitExceeded(exc.payload)))
+                continue
+            credits = fixed_cost if fixed_cost is not None else self._extract_cost_credits(payload)
+            async with self._state_lock:
+                self._deduct_credits(credential, credits)
+            return payload, credential
+
+    async def _request_bytes(
+        self,
+        url: str,
+        params: dict[str, Any],
+        fixed_cost: int,
+        require_api_key: bool = True,
+    ) -> tuple[bytes, CredentialState]:
+        while True:
+            try:
+                credential = await self._choose_credential(fixed_cost, require_api_key=require_api_key)
+            except OpenAlexRateLimitExceeded as exc:
+                await asyncio.sleep(self._rate_limit_sleep_seconds(exc))
+                continue
+            request_params = dict(params)
+            if credential.api_key is not None:
+                request_params["api_key"] = credential.api_key
+            try:
+                payload = await self._single_bytes_request(url, request_params)
+            except OpenAlexRateLimitExceeded as exc:
+                await asyncio.sleep(self._rate_limit_sleep_seconds(exc))
+                continue
+            except OpenAlexBudgetExceeded as exc:
+                try:
+                    exhausted = await self._confirm_budget_exhausted(credential, exc.payload, fixed_cost)
+                except OpenAlexRateLimitExceeded as rate_exc:
+                    await asyncio.sleep(self._rate_limit_sleep_seconds(rate_exc))
+                    continue
+                if exhausted:
+                    continue
+                await asyncio.sleep(self._rate_limit_sleep_seconds(OpenAlexRateLimitExceeded(exc.payload)))
+                continue
+            async with self._state_lock:
+                self._deduct_credits(credential, fixed_cost)
+            return payload, credential
+
+    async def get_entity(
+        self,
+        entity_id: str,
+        entity_type: str = "works",
+        select: str | None = OPENALEX_SELECT,
+        **request_kwargs,
+    ) -> dict:
+        params = dict(request_kwargs)
+        if select:
+            params["select"] = select
+        payload, _ = await self._request_json(
+            f"{OPENALEX_API_URL}/{entity_type}/{entity_id}",
+            params,
+            estimated_cost=0,
+            fixed_cost=0,
+            require_api_key=False,
+        )
+        return self._normalize_work(payload) if entity_type == "works" else payload
+
+    async def _search_works_page(
+        self,
+        search: str = "",
+        filter: list[tuple] | dict | None = None,
+        do_sample: bool = False,
+        page_size: int = 1,
+        page: int = 1,
+        select: str | None = OPENALEX_SELECT,
+        **request_kwargs,
+    ) -> dict:
+        params = {**request_kwargs}
+        filter_string = self._format_filter(filter)
+        if filter_string: params["filter"] = filter_string
+        if search: params["search"] = search
+        if do_sample:
+            params["sample"] = page_size
+            params["seed"] = params.get('seed', random.randint(0, 32767))
+        elif page_size:
+            params["per-page"] = page_size
+            params["page"] = page
+        if select: params["select"] = select
+        estimated_cost = self._estimate_search_cost(search, filter)
+        payload, _ = await self._request_json(
+            f"{OPENALEX_API_URL}/works",
+            params,
+            estimated_cost=estimated_cost,
+            fixed_cost=None,
+            require_api_key=False,
+        )
+        return self._wrap_search_results(payload)
+
+    async def search_works(
+        self,
+        search: str = "",
+        filter: list[tuple] | dict | None = None,
+        do_sample: bool = False,
+        per_page: int = 9999,
+        select: str | None = OPENALEX_SELECT,
+        deduplicate: bool = True,
+        **request_kwargs,
+    ) -> dict:
+        offset = int(request_kwargs.pop("offset", 0) or 0)
+        explicit_page = request_kwargs.pop("page", None)
+        start_page = int(explicit_page or (offset // 200 + 1) or 1)
+        skip_in_first_page = 0 if explicit_page is not None else offset % 200
+        filter = self._normalize_filter_search_values(filter)
+        if "AND" in search or "OR" in search:
+            new_filter = [(DEFAULT_SEARCH_KEY, x) for x in to_openalex(search)]
+            filter = filter or []
+            if isinstance(filter, dict): filter = [*filter.items(), *new_filter]
+            else: filter = [*filter, *new_filter]
+            search = ""
+        if do_sample:
+            payload = await self._search_works_page(
+                search=search,
+                filter=filter,
+                do_sample=True,
+                page_size=per_page,
+                page=start_page,
+                select=select,
+                **request_kwargs,
+            )
+            results = payload.get("results", []) or []
+            results = self.deduplicate_works(results)
+            return {
+                "count": payload.get("count", len(results)),
+                "results": results[:per_page],
+                "_raw_result_count": payload.get("_raw_result_count", len(results)),
+            }
+
+        raw_results, total, raw_seen, page = [], None, 0, start_page
+        target_raw_count = per_page + skip_in_first_page
+        while raw_seen < target_raw_count:
+            payload = await self._search_works_page(
+                search=search,
+                filter=filter,
+                do_sample=False,
+                page_size=200,
+                page=page,
+                select=select,
+                **request_kwargs,
+            )
+            if total is None: total = int(payload.get("count", 0) or 0)
+            batch = payload.get("results", []) or []
+            raw_batch_count = int(payload.get("_raw_result_count", len(batch)) or 0)
+            raw_results.extend(batch)
+            raw_seen += raw_batch_count
+            if raw_batch_count < 200: break
+            page += 1
+
+        results = raw_results[skip_in_first_page:] if skip_in_first_page else raw_results
+        if deduplicate: results = self.deduplicate_works(results)
+        return {"count": total or len(results), "results": results[:per_page], "_raw_result_count": raw_seen}
+
+    def _clean_search_title(self, title: str) -> str:
+        return re.sub(r"\s+", " ", str(title or "")).strip()
+
+    def _title_search_variants(self, title: str) -> list[tuple[str, bool]]:
+        original = self._clean_search_title(title)
+        variants = [(original, False)] if original else []
+        current = original
+        punctuation = ".,;:!?"
+        while True:
+            indexes = [index for index, char in enumerate(current) if char in punctuation]
+            if not indexes:
+                break
+            current = current[:indexes[-1]].strip()
+            if current:
+                variants.append((current, True))
+            else:
+                break
+        return list(dict.fromkeys(variants))
+    def _autocomplete_title_matches(self, original_title: str, results: list[dict], require_match: bool) -> bool:
+        if not require_match:
+            return bool(results)
+        return any(
+            valid_check(original_title, item.get("display_name") or item.get("title") or item.get("name") or "")
+            for item in results
+        )
+
+    async def autocomplete(self, entity_type: str = "works", title: str = "") -> dict:
+        original_title = self._clean_search_title(title)
+        for search_title, truncated in self._title_search_variants(original_title):
+            payload, _ = await self._request_json(
+                f"{OPENALEX_API_URL}/autocomplete/{entity_type}",
+                {"q": search_title},
+                estimated_cost=1,
+                fixed_cost=1,
+                require_api_key=False,
+            )
+            results = payload.get("results", []) or []
+            for item in results:
+                if item.get("id"):
+                    item["id"] = self._normalize_openalex_id(item["id"])
+            if self._autocomplete_title_matches(original_title, results, truncated):
+                return {"count": len(results), "results": results}
+        return {"count": 0, "results": []}
+
+    async def find_work_by_title(self, title: str, select: str | None = OPENALEX_SELECT) -> dict | None:
+        results = await self.autocomplete("works", title)
+        if not results.get("results"): return
+        entity_ids = []
+        for item in results.get("results", []):
+            candidate_title = item.get("display_name") or item.get("title") or item.get("name") or ""
+            if not valid_check(title, candidate_title): continue
+            entity_id = self._normalize_openalex_id(item.get("id", ""))
+            if entity_id: entity_ids.append(entity_id)
+        if not entity_ids:
+            return
+
+        async def _single(entity_id: str):
+            try:
+                return await self.get_entity(entity_id, entity_type="works", select=select)
+            except Exception:
+                return None
+
+        tasks = [asyncio.create_task(_single(entity_id)) for entity_id in dict.fromkeys(entity_ids)]
+        papers = [paper for paper in await asyncio.gather(*tasks) if paper]
+        return self.merge_duplicate_works(papers, original_title=title)
+
+    async def get_citations(
+        self,
+        work_id: str,
+        offset: int = 0,
+        limit: int = 9999,
+        fields: str | None = OPENALEX_SELECT,
+        filter: dict = {},
+        **request_kwargs,
+    ) -> dict:
+        return await self.search_works(
+            filter={"cites": work_id, **filter},
+            per_page=limit,
+            select=fields,
+            offset=offset,
+            **request_kwargs,
+        )
+
+    async def get_references(
+        self,
+        work_id: str,
+        offset: int = 0,
+        limit: int = 9999,
+        fields: str | None = OPENALEX_SELECT,
+        filter: dict = {},
+        **request_kwargs,
+    ) -> dict:
+        return await self.search_works(
+            filter={"cited_by": work_id, **filter},
+            per_page=limit,
+            select=fields,
+            offset=offset,
+            **request_kwargs,
+        )
+
+    async def get_works_batch(
+        self,
+        work_ids: list[str],
+        fields: str | None = OPENALEX_SELECT,
+        **request_kwargs,
+    ) -> dict:
+        async def _single(work_id: str):
+            try:
+                return await self.get_entity(work_id, entity_type="works", select=fields, **request_kwargs)
+            except Exception:
+                return None
+
+        tasks = [asyncio.create_task(_single(work_id)) for work_id in dict.fromkeys(work_ids) if work_id]
+        results = [paper for paper in await asyncio.gather(*tasks) if paper]
+        return {"count": len(results), "results": results}
+
+    async def download_work_content(
+        self,
+        work_id: str,
+        download_type: str = "grobid-xml",
+        output_target: str = "",
+    ) -> str:
+        from .paper_download import parse_with_grobid
+
+        payload, _ = await self._request_bytes(
+            f"{OPENALEX_CONTENT_URL}/works/{work_id}.{download_type}",
+            {},
+            fixed_cost=100,
+            require_api_key=True,
+        )
+        if download_type == "pdf":
+            xml_content = await parse_with_grobid(self.config.grobid_url, io.BytesIO(payload))
+            if not xml_content:
+                raise RuntimeError(f"OpenAlex content download for {work_id} returned no XML")
+            if output_target:
+                with open(output_target, "w", encoding="utf-8") as f:
+                    f.write(xml_content)
+            return xml_content
+
+        xml_content = gzip.decompress(payload).decode("utf-8")
+        if output_target:
+            with open(output_target, "w", encoding="utf-8") as f:
+                f.write(xml_content)
+        return xml_content
+
+
+_OPENALEX_CLIENT: OpenAlex | None = None
+
+
+def get_openalex_client(config: ToolConfig | None = None) -> OpenAlex:
+    global _OPENALEX_CLIENT
+    if _OPENALEX_CLIENT is None:
+        _OPENALEX_CLIENT = OpenAlex(config or ToolConfig())
+    elif config is not None:
+        current_keys = tuple(_OPENALEX_CLIENT.config.openalex_api_keys or [])
+        next_keys = tuple(config.openalex_api_keys or [])
+        if (
+            current_keys != next_keys
+            or _OPENALEX_CLIENT.config.openalex_rate_limit_enabled != config.openalex_rate_limit_enabled
+            or _OPENALEX_CLIENT.config.openalex_requests_per_second != config.openalex_requests_per_second
+            or _OPENALEX_CLIENT.config.grobid_url != config.grobid_url
+        ):
+            _OPENALEX_CLIENT = OpenAlex(config)
+    return _OPENALEX_CLIENT
+
+
+def strip_outer_parentheses(s: str) -> str:
+    s = s.strip()
+    while s.startswith("(") and s.endswith(")"):
+        depth = 0
+        valid = True
+        for i, ch in enumerate(s):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            if depth == 0 and i != len(s) - 1:
+                valid = False
+                break
+        if valid:
+            s = s[1:-1].strip()
+        else:
+            break
+    return s
+
+
+def clean_term(term: str) -> str:
+    term = term.replace('"', "").replace("'", "")
+    term = re.sub(r"[^\w\s\-_]", " ", term)
+    term = re.sub(r"\s+", " ", term).strip()
+    return term
+
+
+def split_top_level_and(query: str):
+    parts = []
+    depth = 0
+    buffer = []
+    tokens = re.split(r"(\bAND\b)", query, flags=re.IGNORECASE)
+    for tok in tokens:
+        if "(" in tok:
+            depth += tok.count("(")
+        if ")" in tok:
+            depth -= tok.count(")")
+        if tok.upper() == "AND" and depth == 0:
+            parts.append("".join(buffer).strip())
+            buffer = []
+        else:
+            buffer.append(tok)
+    if buffer:
+        parts.append("".join(buffer).strip())
+    return parts
+
+
+def split_or(group: str):
+    group = strip_outer_parentheses(group)
+    terms = re.split(r"\bOR\b", group, flags=re.IGNORECASE)
+    return [clean_term(term) for term in terms if clean_term(term)]
+
+
+def to_openalex(query: str) -> list[str]:
+    query = strip_outer_parentheses(query)
+    and_groups = split_top_level_and(query)
+    blocks = []
+    for group in and_groups:
+        or_terms = split_or(group)
+        if or_terms:
+            blocks.append("|".join(or_terms))
+    return blocks

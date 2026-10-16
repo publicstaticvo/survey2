@@ -1,0 +1,246 @@
+import json
+import time
+import asyncio, aiohttp
+from contextlib import asynccontextmanager
+from typing import Any, Optional
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+    'Accept-Encoding': 'gzip, deflate',
+}
+
+
+def normalize_proxy_url(proxy_url: str | None) -> str | None:
+    proxy_url = (proxy_url or "").strip()
+    return proxy_url or None
+
+
+def get_proxy_url(config: Any | None) -> str | None:
+    if config is None:
+        return None
+    return normalize_proxy_url(
+        getattr(config, "proxy_url", None)
+        or getattr(config, "arxiv_proxy_url", None)
+    )
+
+
+class AsyncRequestRateLimiter:
+    def __init__(self, requests_per_second: float = 0.0, enabled: bool = True):
+        self._lock = asyncio.Lock()
+        self._next_allowed_time = 0.0
+        self.configure(requests_per_second=requests_per_second, enabled=enabled)
+
+    def configure(self, requests_per_second: float = 0.0, enabled: bool = True):
+        self.enabled = bool(enabled) and requests_per_second is not None and float(requests_per_second) > 0
+        self.requests_per_second = float(requests_per_second or 0.0)
+        self.interval = 1.0 / self.requests_per_second if self.enabled else 0.0
+        self._next_allowed_time = 0.0
+
+    async def acquire(self):
+        if not self.enabled:
+            return
+        async with self._lock:
+            now = time.monotonic()
+            scheduled_time = max(now, self._next_allowed_time)
+            self._next_allowed_time = scheduled_time + self.interval
+        wait_seconds = scheduled_time - now
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+
+
+class SharedRequestGate:
+    def __init__(self, requests_per_second: float = 0.0, enabled: bool = True):
+        self.rate_limiter = AsyncRequestRateLimiter(requests_per_second, enabled=enabled)
+
+    def configure(self, requests_per_second: float = 0.0, enabled: bool = True):
+        self.rate_limiter.configure(requests_per_second, enabled=enabled)
+
+    @asynccontextmanager
+    async def throttle(self):
+        await self.rate_limiter.acquire()
+        yield
+
+
+OPENALEX_REQUEST_GATE = SharedRequestGate()
+
+class OpenAlexRateLimitExceeded(RuntimeError):
+    def __init__(self, payload: dict | None = None, status: int | None = None, headers: dict | None = None):
+        self.payload = payload or {}
+        self.status = status
+        self.headers = headers or {}
+        self.retry_after = (
+            self.payload.get("retryAfter")
+            or self.payload.get("retry-after")
+            or self.headers.get("Retry-After")
+            or self.headers.get("retry-after")
+        )
+        message = self.payload.get("message", "OpenAlex rate limit exceeded")
+        if self.retry_after is not None:
+            message = f"{message} (retryAfter={self.retry_after})"
+        super().__init__(message)
+
+class OpenAlexBudgetExceeded(RuntimeError):
+    def __init__(self, payload: dict | None = None, status: int | None = None, headers: dict | None = None):
+        self.payload = payload or {}
+        self.status = status
+        self.headers = headers or {}
+        retry_after = (
+            self.payload.get("retryAfter")
+            or self.payload.get("retry-after")
+            or self.headers.get("Retry-After")
+            or self.headers.get("retry-after")
+        )
+        message = self.payload.get("message", "OpenAlex budget exceeded")
+        if retry_after is not None:
+            message = f"{message} (retryAfter={retry_after})"
+        super().__init__(message)
+
+
+class LLMRateLimitExceeded(RuntimeError):
+    """LLM provider returned the token-plan rate-limit response."""
+
+    def __init__(self, payload: dict | None = None, status: int | None = None):
+        self.payload = payload or {}
+        self.status = status
+        error = self.payload.get("error") if isinstance(self.payload.get("error"), dict) else {}
+        message = error.get("message") or self.payload.get("message") or "LLM rate limit exceeded"
+        super().__init__(str(message))
+
+
+def _openalex_payload_message(payload: dict | None) -> str:
+    payload = payload or {}
+    return str(payload.get("message") or payload.get("error") or "")
+
+
+def is_openalex_rate_limit_payload(payload: dict | None) -> bool:
+    message = _openalex_payload_message(payload).lower()
+    return "requests per second" in message or "please slow down" in message
+
+
+def is_openalex_budget_payload(payload: dict | None) -> bool:
+    payload = payload or {}
+    message = _openalex_payload_message(payload).lower()
+    if "insufficient budget" in message or "resets at midnight utc" in message:
+        return True
+    credits_required = payload.get("creditsRequired")
+    credits_remaining = payload.get("creditsRemaining")
+    try:
+        return credits_required is not None and int(credits_remaining or 0) < int(credits_required)
+    except (TypeError, ValueError):
+        return False
+
+
+def raise_openalex_error(payload: dict | None, status: int | None = None, headers: dict | None = None):
+    if is_openalex_rate_limit_payload(payload):
+        raise OpenAlexRateLimitExceeded(payload, status=status, headers=headers)
+    if is_openalex_budget_payload(payload):
+        raise OpenAlexBudgetExceeded(payload, status=status, headers=headers)
+    if status == 429 or (payload or {}).get("error") == "Rate limit exceeded":
+        raise OpenAlexRateLimitExceeded(payload, status=status, headers=headers)
+
+
+# =============== Global Semaphore ===============
+class RateLimit:
+    _DEFAULT_CONCURRENCY = {
+        "agent": 30,
+        "download": 4,
+        "latex_download": 20,
+        "sbert": 20,
+        "parse": 4,
+        "websearch": 50,
+        "s2": 2,
+    }
+    AGENT_SEMAPHORE = asyncio.Semaphore(_DEFAULT_CONCURRENCY["agent"])
+    DOWNLOAD_SEMAPHORE = asyncio.Semaphore(_DEFAULT_CONCURRENCY["download"])
+    LATEX_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(_DEFAULT_CONCURRENCY["latex_download"])
+    SBERT_SEMAPHORE = asyncio.Semaphore(_DEFAULT_CONCURRENCY["sbert"])
+    PARSE_SEMAPHORE = asyncio.Semaphore(_DEFAULT_CONCURRENCY["parse"])
+    WEBSEARCH_SEMAPHORE = asyncio.Semaphore(_DEFAULT_CONCURRENCY["websearch"])
+    S2_SEMAPHORE = asyncio.Semaphore(_DEFAULT_CONCURRENCY["s2"])
+    _active_limits = _DEFAULT_CONCURRENCY.copy()
+
+    @classmethod
+    def configure(cls, values: dict[str, Any] | None = None):
+        values = values or {}
+        limits = {
+            name: max(1, int(values.get(name, default)))
+            for name, default in cls._DEFAULT_CONCURRENCY.items()
+        }
+        if limits == cls._active_limits:
+            return
+        cls.AGENT_SEMAPHORE = asyncio.Semaphore(limits["agent"])
+        cls.DOWNLOAD_SEMAPHORE = asyncio.Semaphore(limits["download"])
+        cls.LATEX_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(limits["latex_download"])
+        cls.SBERT_SEMAPHORE = asyncio.Semaphore(limits["sbert"])
+        cls.PARSE_SEMAPHORE = asyncio.Semaphore(limits["parse"])
+        cls.WEBSEARCH_SEMAPHORE = asyncio.Semaphore(limits["websearch"])
+        cls.S2_SEMAPHORE = asyncio.Semaphore(limits["s2"])
+        cls._active_limits = limits
+
+
+class SessionManager:
+    _global_session: Optional[aiohttp.ClientSession] = None
+    
+    @classmethod
+    async def init(cls):
+        """Initialize the shared aiohttp session."""
+        if cls._global_session is None:
+            connector = aiohttp.TCPConnector(limit=200, limit_per_host=100, ttl_dns_cache=300)
+            cls._global_session = aiohttp.ClientSession(
+                connector=connector,
+                timeout=aiohttp.ClientTimeout(total=1200)
+            )
+    
+    @classmethod
+    async def close(cls):
+        """Close the shared aiohttp session."""
+        if cls._global_session and not cls._global_session.closed:
+            await cls._global_session.close()
+            cls._global_session = None
+    
+    @classmethod
+    def get(cls) -> aiohttp.ClientSession:
+        """Return the shared aiohttp session."""
+        if cls._global_session is None:
+            raise RuntimeError("SessionManager not initialized")
+        return cls._global_session
+
+
+async def async_request_template(
+    method: str,
+    url: str,
+    headers: dict = HEADERS,
+    parameters: dict = None,
+    return_json: bool = True,
+    timeout: int = 30
+) -> dict:
+    """Use the shared aiohttp session."""
+    session = SessionManager.get()
+    
+    headers = headers or {}
+    parameters = parameters or {}
+
+    async def _handle_error_response(resp: aiohttp.ClientResponse):
+        text = await resp.text()
+        try:
+            payload = json.loads(text)
+        except Exception:
+            payload = {"raw_text": text}
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict) and error.get("type") == "rate_limit_error":
+            raise LLMRateLimitExceeded(payload, status=resp.status)
+        raise_openalex_error(payload, status=resp.status, headers=dict(resp.headers))
+        resp.reason = text
+        resp.raise_for_status()
+    
+    if method.lower() == "post":
+        headers.setdefault("Content-Type", "application/json")
+        async with session.post(url, headers=headers, json=parameters, timeout=timeout) as resp:
+            if resp.status >= 400:
+                await _handle_error_response(resp)
+            return await resp.json()
+    else:
+        async with session.get(url, headers=headers, params=parameters, timeout=timeout) as resp:
+            if resp.status >= 400:
+                await _handle_error_response(resp)
+            return await resp.json()
