@@ -1,0 +1,7 @@
+This skill includes ProReviewer code under the Apache License 2.0.
+Upstream: https://github.com/UKPLab/arxiv2026-ProReviewer
+scripts/proreviewer_cli.py and scripts/reviewer_memory.py are derived from the
+upstream CLI and ReviewLog. Modifications provide UTF-8 state handling and are
+extended through scripts/review_cli.py for survey contributions and time context.
+See LICENSE for the license text. The new prompt and extension were written for
+the survey2 research project.

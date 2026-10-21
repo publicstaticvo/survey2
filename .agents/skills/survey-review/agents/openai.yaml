@@ -1,0 +1,4 @@
+interface:
+  display_name: "Survey Review"
+  short_description: "Evaluate survey contributions with historical evidence"
+  default_prompt: "Use $survey-review to evaluate this literature survey, confirming its publication date before external investigation."
