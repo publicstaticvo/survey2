@@ -1,5 +1,4 @@
 __pycache__
-codex_cache
 test_inputs
 test_output
 ablation*
@@ -24,4 +23,6 @@ pdf
 .idea
 .ipynb_checkpoints
 baseline*
+codex*
 review_runs
+golden/proreviewer*

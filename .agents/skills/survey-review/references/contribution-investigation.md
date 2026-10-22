@@ -1,40 +1,44 @@
 # Contribution investigation
 
-## Existing contributions
+## Discover what the paper actually provides
 
-Discover actual synthesis throughout the paper, including diagrams and tables, rather than copying the author's contribution list. For each candidate K record identify:
+K represents a synthesis supplied by the evaluated manuscript, including distributed navigation or evidence organization when useful. Distinguish author promises, source findings, and the survey's own cross-study understanding. Record actual locations, baseline, supporting/opposing sources, centrality and dependencies. Do not credit an interpretation that only the reviewer created.
 
-- What understanding it provides and where the paper establishes it.
-- The relevant earlier studies/surveys and what is added: organization, explanation, clarification, updated evidence, useful distinctions or guidance.
-- Whether original sources support the interpretation, cross-study comparison and inference, including comparability and boundary conditions.
-- Why it matters for the survey's theme, type, purpose and research context at publication.
-- Whether it is central/auxiliary, overlaps another contribution, or depends on one.
+Separate three judgments:
 
-Record separate `correctness_status`, `increment_status`, `significance_status` and a reason; preserve counterevidence. The paper's own novelty assertion is a claim to investigate, not an independent prior-art baseline. No search establishes global novelty by itself.
+- **Correctness:** are source statements faithful, comparison conditions compatible and the synthesis warranted at its stated strength?
+- **Relative increment:** what useful understanding does this account add relative to the prior accounts actually investigated? Reorganization and clarification can count; limited retrieval cannot establish global novelty or absence of prior work.
+- **Value:** what actual synthesis helps which scholarly use, why, and under what limits? Distinguish potential utility from reliably realized guidance. Model reasoning about value is not evidence of measured reader benefit or expert consensus.
 
-## Discovering expected contributions
+A research agenda can be valuable without new experiments; judge the basis and scope of the proposed directions. Do not impose systematic-review procedures on every review type or require effectiveness experiments for every recommendation.
 
-Generate candidate expectations from four entrances:
+## Discover justified expectations before judging absence
 
-A. **Author promises**: translate a concrete goal in title/abstract/introduction/conclusion into the understanding needed to fulfill it. “Comprehensive” alone is insufficient.
-B. **Prerequisites of central synthesis**: ask what relationship, boundary, comparison or counterevidence is needed for an actual taxonomy, explanation or recommendation to hold or be useful.
-C. **Pre-cutoff field problems**: investigate unresolved conflicts, limitations and gaps evidenced in relevant earlier research/surveys. Ask whether this survey's scope actually includes them.
-D. **Stated reader/use function**: identify the understanding necessary for the use the paper claims. If readers are unspecified, use ordinary scholarly functions such as understanding relationships and judging evidence, with the inferred basis made explicit.
+Use D to retain discovery and screening, including rejected candidates. X records the expectation being checked, not a guarantee of a defect. Origin tags summarize A: author promise, B: necessary inferential link, C: external field evidence, D: reader use; tags alone do not show that discovery occurred.
 
-These generate candidates, not automatic weaknesses. Merge duplicates while retaining origins and independent grounds. Prioritize potential consequences for central contributions and uncertainty, not citation counts or search rank. Explore sources beyond the candidate list when new reading exposes an important problem.
+1. **Manuscript route:** inspect promises, comparison goals and prerequisites for the paper's proposed understanding. Ask what synthesis is necessary to fulfill its task, not merely what detail could be added.
+2. **Field/reader route:** investigate the topic's important questions using admissible source texts, independently of the paper's chosen narrative. Adapt searches to what is learned. Form a compact external problem sketch: unresolved relationships, conflicting findings, conditions or scholarly choices, their source grounds and why they matter. Only then compare these questions with the survey's coverage. Searches solely checking a suspected author error do not establish this route.
+3. **Screen:** record source grounds, scope/use, an achievable synthesis response, and whether each question is a candidate, already satisfied, optional, out of scope or insufficiently grounded. An expectation can serve the topic directly without attaching to an author-declared K. No minimum candidate count, fixed source count or compulsory external omission.
+4. **Check:** inspect relevant main text, tables, caveats and appendices before claiming absence. Record checked locations and counterevidence. Distinguish missing, partially supplied and reasonably qualified synthesis. An explicit limitation can answer overclaiming without necessarily fulfilling an important promised contribution.
 
-For each X record establish scope, necessity and impact before deciding absence. An optional table is not itself a knowledge contribution: identify the comparison or inference it would enable. Check relevant sections, appendices and alternative terminology; record `checked_locations`. Keep rationality, presence, and missing status separate. A reasonable expectation may be present; a genuine absence may be merely an enhancement.
+For decision-relevant X, explain why the grounds are credible and not circular, why this survey reasonably owes the synthesis, and what important understanding is limited. Multiple IDs do not prove independent grounds; a single strong source is not automatically insufficient. Mere reader preference, an uncited paper or an unanswered question is not a demonstrated weakness. Preserve limited/no-candidate discovery with actual coverage and access constraints; do not fabricate a problem sketch when investigation failed.
 
-`decision_relevant` expectations need either one internal ground plus independent external support, or two independent internal grounds, with `independence_reason` explaining the chains. Two paraphrases of the same statement count as one ground. This is a minimum audit discipline, not a proof of importance. Other candidates remain `exploratory`; they may guide investigation and questions. A decisive missing-contribution criticism additionally needs reasonable scope/necessity, completed absence verification and a stated consequence.
+## Audit the inference, then adjudicate the challenge
+
+Use A for a consequential inferential unit, not a mandatory form per paragraph. Trace source fact → comparison conditions → cross-study inference → synthesis → scholarly use. Identify where the manuscript is explicit, where reasoning is a fair reconstruction, and where support would have to be newly supplied.
+
+A grounded challenge identifies the target inference, a plausible rival explanation/counterexample/condition and evidence or reasoning that makes it relevant. Inspect the author's existing qualifications; seek support and contrary evidence. Record actual investigation, source locations, verdict and residual uncertainty. No quota of challenges or required counterexample when none was found. Empty counterevidence means none recorded, not proof none exists.
+
+Verdicts: supported, qualified, misrepresented source, invalid inference, reasonable hypothesis, unresolved, or challenge not warranted. A clearly labeled conjecture can be appropriate. An unresolved challenge stays a question/limit; it cannot become an established negative influence by repetition. Failed searches do not establish correctness, novelty or omission.
+
+## Connect findings to the overall judgment
+
+I is a short impact account, not a score component or causal model. State the material positive/negative finding, evidence, affected K/X or scholarly use/independent quality condition, direction and extent, counterevidence, overlap and uncertainty.
+
+Explain whether it strengthens reliability/usefulness, narrows conditions, undermines an important inference or blocks a use. Different descriptions of the same source error or shared dependency should not count as independent penalties. Several modest contributions can jointly provide useful coverage. Pervasive fabrication, unreadability or other independent serious conditions may affect trust/use directly; no forced K linkage.
+
+Overall reasoning identifies reliable positive value, implications of important weaknesses, what remains useful and why the rating category fits relative to its neighbors. Treat uncertainty as uncertainty; acknowledge remaining value rather than treating one defect as cancellation of every contribution. This is an accountable judgment, not empirical proof that a finding caused a score.
 
 ## External investigation
 
-Use the host's available search/open/full-text tools. Form queries from the exact unresolved proposition, adapting to discovered terms, sources and citation chains. Record target proposition, query, tool/mode, visited URLs and failures. Keep the search path flexible within the shared experimental budget.
-
-Check admissibility before drawing substantive conclusions: target cutoff, exact source version, its public availability date, and the passage supporting/refuting the proposition. Use the pre-cutoff version even if a later revision has the same title/DOI. A recently retrieved old PDF is admissible; a recently revised old paper is not automatically admissible. Establish availability with version history, proceedings or publisher metadata; do not assign the original date to added material.
-
-Read source text for decisive judgments. Distinguish inaccessible sources, ambiguous dates, empty results and tool errors. These reduce confidence, not paper quality. Describe the bounded investigation honestly, with no claim of exhaustive literature coverage.
-
-## Overall argument
-
-Explain which reliable contributions carry the paper's value, which limitations constrain them, and why the remaining contribution warrants the score. Identify decisive K/X and/or C/Q/N/E records explicitly. A flaw in an auxiliary detail and a flaw invalidating the main synthesis need different weights; multiple dependent points should not be counted repeatedly. Specify how uncertainty constrains the judgment. The CLI stores this argument; it does not mechanically compute a score from evidence.
+Use available general/scholarly search, publisher/repository pages and full-text tools. No dedicated API/key dependency or fixed query pipeline. Identify source versions and dates; adapt searches after reading, follow citations where useful, and inspect decisive full-text locations. Distinguish live search from cache reuse and record actual queries, tools, results/failures and admissible excerpts. Stop when a consequential question is adequately resolved or the budget/access boundary is reached, recording unknowns. Do not conceal failed access or substitute a newer revision for a historical source.

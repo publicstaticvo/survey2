@@ -1,4 +1,4 @@
 interface:
   display_name: "Survey Review"
-  short_description: "Evaluate survey contributions with historical evidence"
-  default_prompt: "Use $survey-review to evaluate this literature survey, confirming its publication date before external investigation."
+  short_description: "Evaluate survey quality through evidence and contribution impact"
+  default_prompt: "Use $survey-review to evaluate this literature survey's overall academic quality through contribution discovery, inference audits and evidence-grounded impact, using publication-time sources and the required review_<paper stem> output directory."

@@ -1,51 +1,41 @@
 ---
 name: survey-review
-description: Review literature surveys through their existing and justified expected knowledge contributions, investigate scholarly sources as of publication, and produce a ProReviewer-style evidence-grounded review and overall judgment.
+description: Evaluate literature surveys through existing and justified expected knowledge contributions, audit their scientific reasoning against publication-time scholarly evidence, and organize strengths, weaknesses and overall academic quality by substantive impact.
 ---
 
 # Survey review
 
-Review a literature survey with knowledge contribution as the main investigative lens. Follow ProReviewer's active reading and persistent ReviewLog approach, producing summary, strengths, weaknesses, questions, comments when useful, and an overall score with an explicit rationale. Explain the scope of the judgment and how the evidence warrants it.
+Evaluate **overall academic quality**, using reliable and useful cross-study synthesis as the main investigative lens. Preserve ProReviewer's active reading, persistent ReviewLog and review format. Contributions can include maps, distinctions, explanations, taxonomies, evidence assessments and research directions; useful synthesis need not be globally novel. Do not equate quality with a contribution count or exhaustive flaw detection.
 
-Knowledge contribution is a useful synthesis of existing research: relationships, distinctions, explanations, conditions, taxonomies, evidence maps, resolution of conflicting findings, or supported research directions. Assess correctness, what it adds relative to prior knowledge, and its significance for this survey's goals at publication. A useful synthesis need not be a world-first finding.
+## Start and output contract
 
-## Invocation and time context
-
-Use `scripts/review_cli.py` relative to this SKILL.md; resolve an absolute script path before executing commands. Python requires `pydantic>=2,<3` and `PyMuPDF` for PDF input. The CLI also accepts Markdown, text, LaTeX, and LaTeX project directories through the original ProReviewer converter.
+Invoke `$survey-review "<absolute paper path>"` in Codex or `/survey-review "<absolute paper path>"` in Claude Code. Resolve `scripts/review_cli.py` relative to this skill. Install `requirements.txt` if needed. PDF, Markdown, text, LaTeX and LaTeX project directories are supported.
 
 ```text
-$survey-review "P:/papers/survey.pdf" --publication-date 2025-03-14
-$survey-review "P:/papers/survey.pdf"
+python <skill>/scripts/review_cli.py init "P:/papers/Survey Title.pdf" --publication-date 2025-03-14 --date-basis "User supplied" --conference iclr
 ```
 
-Use `$survey-review` in Codex and `/survey-review` in Claude Code, from this project.
+**Every new run directory is `review_{input filename without its final extension}`**, e.g. `review_Survey Title`. Preserve spaces, Unicode and the full stem; replace Windows-invalid characters with `_` and trim trailing dots/spaces. For project-directory input use its directory name. `--dir <parent>/review_<stem>` may change the parent, never the basename. Reuse an existing run with subsequent commands; initialize a separate parent for a new sample. No truncation, added run suffixes or overwriting nonempty runs.
 
-Initialize using the provided date and conference (default is ProReviewer's ICLR scale):
+Use only these final artifact names: `paper.md`, `input_manifest.json`, `review_log.json`, `review.md`, `audit_summary.md`, and optional `steps.jsonl` / `steps.md`. Keep request payloads in `inputs/<kind>_<id-or-new>.json` and downloaded source files in `sources/<E-id>.<ext>`; create these subdirectories only when needed. Do not create alternate final reports. The CLI fixes the run basename and exported review filename.
 
-```text
-python <skill>/scripts/review_cli.py init "paper.pdf" --dir "review_survey" --publication-date 2025-03-14 --date-basis "User supplied publication date" --version "submitted PDF" --conference iclr
-```
+Before investigation read [state-and-cli.md](references/state-and-cli.md) for commands and [contribution-investigation.md](references/contribution-investigation.md) for discovery, audit and impact decisions.
 
-**Evaluate with information available on or before the paper's publication cutoff. Do not use information published after that date to judge correctness, prior art, significance, missing contributions, or overall quality.** This includes later discoveries, later reviews, hindsight about research impact, and later versions of earlier papers. Model memory about post-cutoff developments is also inadmissible. A search date filter alone does not establish admissibility.
+## Temporal and evidence boundary
 
-When only a PDF is provided, initialize without a date, identify the exact manuscript from its front matter, then verify its publication/release date using the paper or an authoritative version history. Write the date and its source using `context` before external evaluative investigation. For an unpublished submission, use a verified release/submission date for that evaluated version. Keep target version and date basis explicit. PDF file creation/modification timestamps and the newest year in the bibliography are not publication dates.
+The exact input PDF is authoritative. Confirm its evaluated version, publication/release/submission cutoff and the basis using `context` before external evaluation. Metadata pages may establish identity/dates; file timestamps and the newest cited year do not. If only a year/month is established, use its earliest day conservatively and record uncertainty. If unresolved, continue internal reading but request the missing context before a historically grounded final judgment.
 
-If only a year/month is verifiable, record the uncertainty and use the earliest day of that interval as a conservative cutoff, explicitly marking this choice; retain time-ambiguous sources as uncertain. If the date cannot be established, continue internal investigation, report the missing temporal context, and request clarification rather than fabricate a date or finalize a historically grounded judgment. A PDF revised after its claimed cutoff needs an explicit version/date resolution before finalizing.
-
-Retrieval may happen today, but admissible substantive evidence must be from a version publicly available by the cutoff. Modern catalog pages may establish identity/version metadata; their later commentary, citation counts, rankings, and retrospective assessments cannot support a historical quality judgment.
+Use substantive evidence from source versions available **on or before the cutoff**. Exclude later discoveries, revised contents, hindsight, citation counts and post-cutoff model memory. Date filters alone do not verify source versions. Search snippets, inaccessible text and undated versions remain provisional. Use the host's available scholarly web/page/PDF tools with adaptive, question-driven searches; no mandatory API keys, providers or fixed keyword templates. Record actual searches, failures, access limits and budget. Never read previous reviews, official reviews or development-case diagnoses as answers.
 
 ## Working loop
 
-Read [references/state-and-cli.md](references/state-and-cli.md) for state operations and [references/contribution-investigation.md](references/contribution-investigation.md) for the two investigation directions.
+1. Initialize and read the whole paper, mapping its goals, type, scope, central promises and distributed useful contributions. Inspect original figures/tables when extraction is uncertain. Persist C/Q/N notes and K contributions during reading; update existing records rather than duplicating them.
+2. Discover expected contributions through **both manuscript and independent field/reader routes**. In the latter, investigate cutoff-admissible topic issues beyond checking the author's claims, then form source-grounded questions and possible synthesis responses. Screen scope, importance and feasibility before checking the full paper for presence. Record D outcomes including satisfied, optional, out-of-scope, insufficient or limited discovery; promote justified candidates to X. No quotas or compulsory missing contributions.
+3. Prioritize investigations that could change a consequential assessment. Audit source facts, comparability conditions, cross-study inference, the actual synthesis and its scholarly use. Challenge important inferences when there is a plausible alternative, counterexample or scope problem; check the author's existing response, seek supporting and contrary evidence, and record the investigation and verdict in A. Do not turn an unanswered reviewer guess into a defect or the agent's newly supplied synthesis into the paper's contribution.
+4. Assess K correctness, relative increment and value **separately, each with reasons**. Tie value to the actual synthesis, a scholarly use, why it helps and its conditions. State search limits for increment judgments. For X, establish reasonable necessity, inspect the whole manuscript including caveats/appendices, and distinguish absent from partial, qualified or already supplied. Unknown is not poor quality.
+5. Record material positive and negative I findings: evidence, affected K/X or justified scholarly use/independent quality condition, direction, extent, reasoning, overlap and uncertainty. Preserve independent serious problems that directly affect trust or use without forcing them into K. Do not count findings, average contribution labels or invent repaired-paper scores.
+6. After each investigation, use `step` to record target, priority, actual action, finding and state operations. Before closing, account for section coverage, unfinished challenges and external-discovery/search/budget limits. These are agent-written records, not automatically intercepted tool events.
+7. Write summary, strengths, weaknesses, questions and useful comments through `outline` / `point`. Give positive findings the same evidential care as criticisms. Use `judgment` to explain reliable contributions, decisive limits, remaining value, dependencies, overlapping roots and why the conference rating category fits relative to adjacent categories. Cite the material I records; use `outline` for the score, or leave it unset with an explicit inability-to-judge explanation.
+8. Run `audit`, fix errors, then `finalize`. Inspect `review.md` and `audit_summary.md` for faithful evidence, complete links and temporal leakage. Structural checks do not establish semantic support, discovery recall or scholarly validity. Return the review and run-directory paths.
 
-1. Initialize, confirm the temporal context, and map the paper's structure and central promises. Use the exact input PDF as authoritative; record uncertainty caused by extraction and inspect original figures/tables when needed.
-2. Log author claims, questions, observations, candidate contributions, and candidate expectations as they arise. Keep the ReviewLog as working state, updated during reading. Each targeted read may reveal new contributions or issues beyond the original agenda.
-3. Consult unsettled records and choose the investigation most likely to clarify a central contribution or change the overall judgment. Examine the paper's synthesis and its supporting sources; use the host agent's available web search and page/PDF tools for question-driven scholarly investigation. Decide queries and follow-up paths from evidence rather than fixed keyword templates. Record actual searches and failures; respect any user-specified global budget.
-4. Verify the specific external source version, availability date, location, and excerpt before using it. Store search snippets and inaccessible/undated sources as partial or uncertain. Seek contrary evidence on consequential disputes. Search failure is not evidence that prior work is absent. Record counterevidence and unresolved alternatives.
-5. Update existing-contribution correctness, increment, and significance separately. For expected contributions, first discover candidates, then assess grounds/scope/necessity, then inspect the full manuscript for their presence. Distinguish consequential deficiencies from optional improvements.
-6. Record a `step` after each investigation: target, reason for priority, actual reading/search, findings, and resulting operations. These are agent-written investigation records, not an automatic capture of every tool event. Check every section before closing; identify budget or access limits explicitly and preserve unresolved questions as uncertainty.
-7. Build the review using the original `outline` interface or `point` for extended evidence references. Substantiate positive as well as negative judgments. Explain why each point matters and identify actionable implications. Other grounded observations can be recorded through claims/questions/notes and included where relevant.
-8. Set the conference-scaled `overall_score` with `outline`; use `judgment` to record the decisive evidence and explain how positive and negative findings jointly support the overall conclusion. Discuss centrality, overlapping contributions, dependencies, and limitations instead of counting points. Unknown is not poor quality. If key evidence prevents a score, leave it unset and explain the limit.
-9. Run `audit`, correct errors, then `finalize`. Inspect the exported review for evidence support and temporal leakage; validators establish structural/date consistency, not scholarly truth. Return the review and output paths.
-
-The output includes `paper.md`, `input_manifest.json`, `review_log.json`, `review.md`, and, when recorded, `steps.jsonl` / `steps.md`. Maintain ProReviewer's review format and conference rating scale; the methodological change is the knowledge-contribution investigation and its evidence state.
+This version does not add an exhaustive hallucination/format scanner, paper rewriting, counterfactual experiments, a large contribution graph or multiagent machinery. Incorporate consequential problems actually found; report the investigation's limits.
