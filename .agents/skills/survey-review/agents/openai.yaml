@@ -1,4 +1,4 @@
 interface:
   display_name: "Survey Review"
-  short_description: "Evaluate survey quality through evidence and contribution impact"
-  default_prompt: "Use $survey-review to evaluate this literature survey's overall academic quality through contribution discovery, inference audits and evidence-grounded impact, using publication-time sources and the required review_<paper stem> output directory."
+  short_description: "Review survey knowledge results and academic value"
+  default_prompt: "Use $survey-review to evaluate this literature survey's actual and justified expected knowledge results with separate knowledge-increment identification, correctness, relative novelty and scholarly-value assessments, using the required review_<paper stem> output directory."

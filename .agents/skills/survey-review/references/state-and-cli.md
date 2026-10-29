@@ -1,431 +1,232 @@
-# ReviewLog: definitions, states and operations
+# ReviewLog：记录定义、状态与命令
 
-This file defines the persistent working state. Read it before creating records. The main workflow decides **when to act**; this file defines **what each record means and how to write it**. All commands use `python <skill>/scripts/review_cli.py`.
+## 1. 记录对象
 
-## Conventions
+先理解记录对象，再使用短名称。短名称只用于 JSON 的记录编号和命令实现。
 
-- A record is a revisable assessment, not a fact made true by its ID. References establish traceability; their semantic support still needs investigation.
-- Create the record when its object becomes identifiable. Update the existing ID when evidence changes. K/X exact duplicates are rejected; semantic duplicates require reviewer inspection. There is no deletion or automatic semantic-merge command.
-- Supply a UTF-8 JSON payload using a file-writing tool. `put <kind> --file <path>` creates the next ID when `id` is omitted; specifying an existing ID patches only supplied fields. Arbitrary IDs and unknown JSON fields are rejected. Omitted fields retain their values on update; a supplied list replaces that list.
-- Required fields below mean required by the current model. "Assessment requirement" means additional semantic obligations of this procedure. Reference arrays default to `[]`, strings to `""` unless stated otherwise. Every record has an automatically assigned `id`.
-- D/A/I routes/verdicts/statuses are already enumerated by the model. E statuses are checked by audit. **K/X states, centrality and S outcomes below are v2a vocabulary conventions; current code stores them as strings and does not fully enforce them.** Use these words in new runs; do not silently rewrite old runs.
-- For an assessed dimension, `unchecked` means investigation not performed; a terminal `unknown` requires actual investigation that cannot settle the specified judgment. Record attempted actions, inspected evidence, the missing discriminating fact and why feasible further work stops. This does not redefine initialization defaults such as X.necessity=unknown or S.mode=unknown: those values alone never mean that an investigation was completed. Merely writing unknown is not completion. Unknown is neither zero quality nor necessarily immaterial to the overall judgment.
+### 候选知识单元（K）
 
-## K - Existing knowledge contribution
+记录综述正文实际表达的一项关于领域的理解或组织结果。K 是抽取时创建的候选，创建时不假设它正确、新颖或有价值。
 
-**Object:** one identifiable understanding supplied by the evaluated survey: a relation, distinction, classification, explanation, evidence assessment, research direction or useful integrated map. K describes the survey's output, not an isolated finding copied from a cited study or the reviewer's newly invented synthesis.
+必需字段：
 
-**Create when:** a located passage, table, figure or distributed argument indicates the contribution. A candidate can be recorded before verification. **Update when:** its interpretation, evidence, baseline, conditions or assessment changes. Split only if outputs have materially different support/use; keep common source dependencies explicit.
-
-| Field | Type / default | Meaning and writing requirement |
-|---|---|---|
-| `statement` | required string | What understanding the manuscript supplies, including scope; avoid "excellent taxonomy" |
-| `paper_locations` | required string array | Locations that actually express this synthesis; include pages/sections/tables |
-| `baseline_or_prior` | string | Prior understanding/accounts actually compared; state not investigated before work, or explain bounded unknown after actual work |
-| `evidence_ids` | E array | Source passages supporting identity and assessments; explain their roles in the reasons |
-| `counter_evidence_ids` | E array | Contrary/qualifying passages; include the author's own relevant caveats |
-| `dependencies` | K array | Contributions whose validity this contribution relies on, not every related topic |
-| `centrality` | `unknown` | `main`: essential to the principal output; `supporting`: enables it; `peripheral`: limited local output; explain basis in `reason` |
-| `correctness_status` | `unchecked` | Scientific/source and inferential validity; see states below |
-| `increment_status` | `unchecked` | Relative added understanding against inspected prior accounts |
-| `significance_status` | `unchecked` | Value for scholarly understanding/judgment/research; not citation popularity |
-| `correctness_reason` | string | Facts, comparison conditions, inference and evidence; distinguish reconstruction from manuscript text |
-| `increment_reason` | string | Specific prior comparison, added/duplicated understanding and search limits |
-| `significance_reason` | string | Actual output -> scholarly use -> why useful -> conditions; distinguish potential from demonstrated benefit |
-| `reason` | string | Identity, granularity/centrality rationale or shared context; does not replace the three reasons |
-| `uncertainty` | string | Unverified portions and their possible effect |
-
-| Assessment | Allowed v2a states | Meaning |
-|---|---|---|
-| Correctness | `unchecked`, `supported`, `qualified`, `unsupported`, `invalid`, `unknown` | Supported at the stated scope; supported only with specified conditions; insufficient manuscript support after checking; contradicted/invalidated by inspected evidence; or reviewer cannot settle it |
-| Relative increment | `unchecked`, `substantial`, `moderate`, `limited`, `none_identified`, `unknown` | Qualitative extent of added understanding relative to named inspected accounts; `none_identified` requires an actual comparison, not failed retrieval |
-| Value | `unchecked`, `high`, `meaningful`, `limited`, `none_identified`, `unknown` | Reasoned importance of the actual contribution for its scope/use, not a numerical score; weak/unsupported claims may still have potential but not established realized value |
-
-Normal transition: `unchecked` -> evidence-based judgment or `unknown`; any judgment can be reopened when evidence changes. `qualified` does not by itself mean weakness: check whether the paper already states the conditions. `unsupported` describes an inspected support gap; use `unknown` if the reviewer could not inspect it.
-
-## D - Discovery and screening of possible expectations
-
-**Object:** one question investigated as a possible reasonable expectation, together with how it was discovered and screened. D records the discovery process and retains satisfied/rejected/limited outcomes. It is neither a missing contribution nor a criticism.
-
-**Create when:** a manuscript promise/inference prerequisite or actual field investigation yields a question; also create a route-level record when investigation cannot proceed. Update the same D as screening/presence checks progress. A route-level limited/no-candidate D reports what was attempted, not an invented candidate.
-
-| Field | Type / default | Meaning |
-|---|---|---|
-| `route` | required `manuscript` / `field` | From manuscript promises/prerequisites or independent topic evidence |
-| `disposition` | required enum below | Current screening outcome |
-| `reason` | required string | Why the outcome follows from evidence, scope, importance and feasibility |
-| `question` | string | Concrete understanding the survey might owe, phrased as a question |
-| `basis_evidence_ids` | E array | Actual origin evidence; source content and normative relevance are separate |
-| `search_ids` | S array | Actual attempts that produced or limited discovery |
-| `scope_and_use` | string | Why the question fits this survey and matters for scholarly use |
-| `possible_synthesis` | string | Feasible synthesis of existing literature, not a demand for a new research project |
-| `checked_locations` | string array | Manuscript locations checked for an existing/equivalent response |
-| `uncertainty` | string | Unsettled source/necessity/presence/access issues |
-
-| Disposition | Meaning / next action |
+| 字段 | 内容 |
 |---|---|
-| `candidate` | Grounds, scope, importance and feasible response pass screening; create X to check the expectation, not to assert absence |
-| `satisfied` | Manuscript provides an adequate response; cite locations and preserve contrary evidence |
-| `optional` | Useful addition, but insufficient reason this survey owes it; suggestion rather than weakness |
-| `out_of_scope` | Outside the survey's justified remit; explain the boundary |
-| `insufficient` | Available grounds fail to establish the expectation or screening remains unsettled; no omission claim |
-| `no_candidate` | Actual route investigation found no qualified candidate in the inspected scope; no exhaustive recall claim |
-| `limited` | Access/budget/coverage prevented adequate discovery or screening; record actual attempts and the missing step |
+| statement | 忠实复述综述形成的具体认识 |
+| scope | 适用对象、条件和边界 |
+| paper_locations | PDF 页码、章节、表格、图或附录位置 |
+| result_form | synthesis、organization、both |
+| knowledge_relation | background、single_source_summary、review_synthesis、unresolved |
+| extraction_reason | 为什么它满足具体内容、范围出处和独立检查意义 |
+| increment_identification_status | 候选是否构成可能的知识增量 |
+| correctness_status | 正确性状态 |
+| novelty_status | 相对新颖性状态 |
+| value_status | 学术价值状态 |
+| evidence_refs | 已创建的来源证据编号 |
+| assessment_refs | 已创建的评估记录编号 |
+| promise_refs | 关联的作者承诺位置，可为空 |
+| related_knowledge_ids | 支撑或依赖的其他 K，可为空 |
 
-There is no compulsory missing contribution. A candidate later found satisfied changes to `satisfied`; new evidence may revise any disposition. A fresh unscreened thought belongs in the run agenda until screening is actually attempted; do not use `insufficient` as a placeholder for unperformed screening. Insufficient is a completed negative/inconclusive screening outcome with actual grounds; limited is an investigated access/budget boundary. Neither automatically re-enters the agenda.
+**知识增量识别只回答一个窄问题：这项候选是否确实表达了具体、有限定、可单独检查的综述层面认识或组织结果，因而可能构成知识增量？**
 
-## X - Justified expected contribution
+该判断排除只承担背景说明的内容、单篇研究结果的转述，以及没有形成跨研究关系或组织规则的文献清单。它不评判候选是否正确，不比较其他综述是否已有同一结果，也不评判其学术价值。前者由正确性评估处理；与截止点前综述或研究的实质比较由相对新颖性评估处理；价值另行评估。因此，“可能构成知识增量”不等于正确、新颖、有价值三者的合并评分。
 
-**Object:** a specific synthesis that this survey may reasonably be expected to supply, separately from whether it is present. X can end as satisfied; it does not mean defect. Create after D screening, and update rationality and presence independently.
+`knowledge_relation` 描述候选在当前稿件中的内容角色：`background` 表示用于交代背景；`single_source_summary` 表示主要转述单篇来源；`review_synthesis` 表示稿件形成了跨研究认识或组织结果；`unresolved` 表示依据尚不足以分类。该字段只是抽取分类，不代替知识增量识别状态，也不判断外部文献中是否已有相同结果。
 
-| Field | Type / default | Meaning |
-|---|---|---|
-| `expectation` | required string | Concrete expected understanding, not "more depth" or a mandatory uncited paper |
-| `origins` | required string array | v2a descriptive tags: `author_promise`, `inference_prerequisite`, `field_issue`, `reader_use`; tags, not record IDs |
-| `basis_evidence_ids` | required E array by this protocol | Why the expectation arises; distinguish evidence of the issue from why this paper owes it |
-| `scope` | required string | Topic/type/purpose boundaries making this expectation applicable |
-| `discovery_ids` | D array | D records showing origin and screening |
-| `necessity` | `unknown` | v2a: `required`, `useful_optional`, `out_of_scope`, `unknown` |
-| `impact_hypothesis` | string | What important understanding/use might be lost; hypothesis until checked |
-| `tier` | `exploratory` | `decision_relevant` only after necessity, presence and effect are established |
-| `independence_reason` | string | Why grounds are credible and not merely the reviewer's preference or circular restatement |
-| `search_ids` | S array | Discovery/presence/source searches relevant to the expectation |
-| `evidence_ids` | E array | Passages supporting reasonable necessity or the assessed presence/absence |
-| `counter_evidence_ids` | E array | Existing responses, caveats and evidence against necessity/absence |
-| `presence_status` | `unchecked` | v2a: `unchecked`, `present`, `partial`, `absent`, `unknown` |
-| `rationality_status` | `unchecked` | v2a: `unchecked`, `justified`, `optional`, `out_of_scope`, `unsupported`, `unknown` |
-| `missing_status` | `unchecked` | v2a: `unchecked`, `confirmed`, `not_missing`, `unknown` |
-| `checked_locations` | string array | Main text, tables/figures, limitations and appendices actually checked |
-| `uncertainty` | string | Remaining scope/necessity/presence ambiguity |
-| `next_question` | string | Next discriminating question while unsettled; empty when settled |
-
-**Decision rule:** an omission may support a weakness only with `rationality_status=justified`, `necessity=required`, `presence_status=absent` (or a specified consequential gap in `partial`), `missing_status=confirmed`, `tier=decision_relevant`, a candidate D, whole-paper check and established negative I. For partial presence, "confirmed" means the exact unmet component is established; name the supplied part and remaining gap. Optional/out-of-scope/unsupported expectations remain exploratory and do not penalize quality.
-
-At creation, necessity=unknown is an initial pending value while rationality/presence/missing assessments remain unchecked. After actual investigation, an unknown assessment must carry the attempted work and missing discriminator in uncertainty/next_question or linked step. Do not infer a terminal investigation outcome from the default necessity label.
-
-All four screening questions are necessary for **the specific obligation being claimed**, but do not require certainty about every related detail. Unknown scope/obligation, material use, factual basis, feasible response, or presence blocks confirmation of that omission. Unknowns about a secondary mechanism, exact benefit magnitude or an optional example need not block a narrower established omission. State which prerequisite the uncertainty touches; restrict the claim accordingly rather than upgrading or rejecting the entire topic wholesale.
-
-Transition: screened D -> exploratory X -> separate necessity/presence investigation -> decision-relevant X only if a material obligation and unmet part are verified. Satisfied X uses `present`/`not_missing`, with D changed to `satisfied`. New evidence can demote a previously accepted X; revise its I and review points too.
-
-## A - Audit of an inference
-
-**Object:** one consequential inferential unit for a K or X: what premises, comparison and reasoning warrant its conclusion. A can confirm a sound inference without inventing a challenge. It is not a general impression or the effect on overall quality.
-
-**Create when:** a relevant inference is identified and needs checking; use `unresolved` if investigation is pending. Update that A as evidence is obtained. Each independent inference may have its own A; avoid a compulsory A per paragraph.
-
-| Field | Type / default | Meaning |
-|---|---|---|
-| `target` | required string | Existing K/X ID being audited |
-| `inference` | required string | Premises/comparison -> inferred conclusion; mark explicit text vs fair reconstruction |
-| `author_response` | required string | Located caveats/responses; before checking write "Not yet checked," after a negative search state where checked |
-| `investigation` | required string | Before work, `not_started:` plus pending action; after work, `performed:` plus actual reading, source checks, calculations/results. Never present a plan as completed work |
-| `verdict` | required enum below | Current result |
-| `reason` | required string | Why evidence licenses this verdict at the stated scope |
-| `challenge` | string | Specific rival, counterexample or scope concern if one has grounds |
-| `challenge_basis` | string | Observed fact or explicit logical reason making it plausible; required when challenge is nonempty |
-| `evidence_ids` | E array | Passages inspected for the inference and finding |
-| `counter_evidence_ids` | E array | Evidence against the current assessment, including contrary author qualifications |
-| `search_ids` | S array | Actual external investigations |
-| `uncertainty` | string | Remaining unverified premise/scope and possible consequences |
-
-| Verdict | Meaning |
+| 状态 | 含义 |
 |---|---|
-| `unresolved` | Investigation has not settled the inference; a question/limit, not a proved defect |
-| `supported` | The specified inference is supported within its actual scope |
-| `qualified` | Evidence supports a narrower/conditional conclusion; separately check how the paper expresses it |
-| `misrepresented_source` | The survey's attribution or source description conflicts with inspected source text |
-| `invalid_inference` | Identified premises/logic do not warrant the asserted conclusion; name the failing link |
-| `hypothesis` | A plausible, clearly unestablished explanation; judge whether the paper appropriately labels it |
-| `not_warranted` | The reviewer challenge has no adequate basis or is answered; do not carry it forward as a criticism |
+| unchecked | 尚未检查是否确实形成候选知识增量 |
+| possible_increment | 稿件形成了可单独检查的综述层面认识或组织结果；可能构成知识增量，但不代表正确、新颖或有价值 |
+| not_increment | 证据表明它只是背景、单篇研究转述、未形成综合关系的文献清单或其他非综述层面结果 |
+| unknown | 已调查但仍不能区分是否形成知识增量，并记录调查边界 |
 
-`not_warranted` describes the challenge, not proof that all aspects of K are correct. A `qualified` result becomes a negative I only when the manuscript exceeds the support or loses a justified use. A correctly labeled hypothesis can be valuable without being a validated mechanism.
+正确性使用 unchecked、supported、qualified、invalid、unknown。相对新颖性使用 unchecked、prior_match、partial_overlap、no_match_within_search、unknown。价值使用 unchecked、meaningful、limited、not_established、unknown。后续证据可以重新打开任何已判断状态，旧状态和变更理由保留在 revision history 中。
 
-### Four outcomes for a previously raised challenge
+### 预期知识项（X）
 
-| What happened | A update using existing enums | Downstream action |
-|---|---|---|
-| Challenge sustained by inspected evidence | invalid_inference/misrepresented_source, or qualified if the actual claim exceeds a supported condition; reason names the failing claim | Update K/X; create negative I only for established material effect, not merely a strong adjective |
-| Manuscript qualification answers the challenge | not_warranted with reason `answered_by_author_qualification`; supported/hypothesis may be used for a separate sound inference, but do not leave the challenged allegation active | Record response locations; withdraw the specific allegation; no negative I from that allegation. Check stronger passages before claiming it was fully answered |
-| Insufficient evidence to decide | unresolved, investigation performed with missing discriminator, attempts and stop/next-action reason | Keep question/limitation, not established weakness; I remains uncertain if effect depends on the unresolved fact |
-| Counterevidence disproves the challenge | not_warranted with reason `refuted_by_counterevidence`, explicitly naming the earlier proposition rejected and contrary E | Preserve trajectory, retract that proposition, recompute affected K/X, mark dependent negative I withdrawn/uncertain, remove its decisive refs and final criticism |
+记录目标读者有依据期待综述提供的一项具体综合认识或组织结果。它与 K 使用同一候选生命周期：发现时创建一条记录，随后更新合理性和正文覆盖状态；不再设置一个独立的发现候选记录类型。
 
-Withdrawal does not delete audit history: preserve the former assessment and affected IDs in a timestamped input snapshot before overwriting them; after the canonical updates, the iteration step records the former assessment, new evidence, new verdict and affected IDs. Keep the original challenge text as a historical question in A but make its current rejection explicit; wording in the final review must follow the new verdict. Update all dependent records rather than merely adding a rebuttal note. See the outline-revision limitation below.
+必需字段：
 
-## I - Impact on contribution and overall judgment
+| 字段 | 内容 |
+|---|---|
+| expectation | 具体预期结果，不能写成“需要更多讨论” |
+| route | ordinary_reader 或 senior_reader |
+| trigger_locations | 标题、摘要、正文 K、作者承诺或外部资料位置 |
+| trigger_reason | 为什么触发这项预期 |
+| scope | 预期结果所属的综述范围 |
+| scholarly_use | 缺少或提供该结果会影响什么理解、比较、判断或研究选择 |
+| rationale | 支持预期具有内容责任的理由 |
+| feasible_response | 截止点前资料如何支持综述回应 |
+| rationality_status | pending、confirmed、rejected、insufficient |
+| presence_status | unchecked、present、partial、absent、unknown |
+| evidence_refs | 支撑触发、合理性或正文覆盖的来源证据 |
+| search_refs | 相关检索事件 |
+| related_knowledge_ids | 受该期待影响或用于检查的 K |
 
-**Object:** an evidence-backed account of what a finding changes about reliable understanding, scholarly use or an independent serious trust condition. I is neither a new evidence source nor a numerical weight or counterfactual repaired-paper score.
+只有 rationality_status=confirmed 且 presence_status=absent 或 partial，才允许形成遗漏型 weakness。X 本身不代表论文存在缺陷。
 
-| Field | Type / default | Meaning |
-|---|---|---|
-| `finding` | required string | The actual positive/negative finding, not "K1 is important" |
-| `evidence_refs` | required ID array | E/A/K/X and other existing records providing its support; include the actual audit where applicable |
-| `direction` | required enum below | How the finding changes the assessment |
-| `extent` | required enum below | What part of the survey is affected; not severity |
-| `reason` | required string | Evidence -> affected understanding/conditions -> use/importance; what remains valid |
-| `target_refs` | K/X array | Contributions/expectations materially affected |
-| `scholarly_use` | string | Specific understanding, judgment or research use at issue |
-| `independent_quality` | string | Serious trust/use issue without a forced K/X link, if actually encountered |
-| `counter_evidence_ids` | E array | Evidence limiting or reversing this impact |
-| `overlaps` | I array | Other effects sharing an underlying cause; avoid double counting |
-| `status` | `uncertain` / `established` | Reviewer judgment supported by sufficient evidence, not empirical causal proof |
-| `uncertainty` | string | Unsettled magnitude/scope, dependencies or access limits |
+### 来源证据（E）
 
-Directions: `supports` confirms reliable usefulness; `enhances` establishes additional value beyond the initial assessment; `qualifies` narrows conditions while preserving a contribution; `weakens` undermines an important component/use; `blocks` makes the specified conclusion/use unreliable or unavailable; `unknown` means effect unresolved. `qualifies` can describe a sound boundary, not an automatic penalty.
+记录实际查看过的论文内或外部来源材料。E 只能引用实际访问的版本和位置；搜索摘要只能支持身份发现，不能代替决定性正文证据。
 
-Extent: `local` affects one bounded part; `main` affects a principal contribution; `distributed` affects several parts or a shared dependency; `unknown` is unsettled. A main effect need not be fatal, and distributed is not automatically worse.
+字段：
 
-Transition: `uncertain` -> `established` after facts, link, conditions and counterevidence are checked. Revise/demote if a premise changes. Only established findings with non-unknown direction can decide the overall judgment. An unresolved A cannot become established impact merely through paraphrase.
+| 字段 | 内容 |
+|---|---|
+| source_type | manuscript、paper、dataset、web_page 或其他实际类型 |
+| source_identity | 标题、作者、标识符或输入文件 |
+| version_date | 具体版本及可用日期 |
+| location | 页码、章节、表格、图、段落或网页定位 |
+| excerpt | 实际摘录或忠实概述 |
+| role | support、counter、limit 或 context |
+| evaluation_role | increment、correctness、novelty、value、expectation、impact |
+| target_refs | 支持或限制的 K、X 或评估记录 |
+| accessed_at | 实际访问时间 |
+| cutoff_eligible | 是否满足评价截止点；未知时写 unknown |
 
-Three questions must remain separate: **fact state** (E/A/X: what is established), **material severity** (I.reason: what reliability/use is lost or gained and how much remains), and **rating effect** (overall rationale: how all material reasons jointly fit the selected rubric). Extent is affected scope, not severity. Write severity in prose in I.reason using the actual consequence - bounded correction, loss of a comparison, failure of a central inference - rather than inventing a numeric field/weight. I is established by a justified link to a central conclusion, important synthesis/evidence or obtainable understanding; "K is novel, therefore high overall quality" is not such a link. Several I from one root may describe distinct effects, but the overall reasoning counts the common root once and explains any additional distinct loss/benefit.
+### 评估记录（A）
 
-## E - Source evidence
+A 是 Assessment 的简称，表示对一项 K 或 X 的一个维度作出的评估记录。A 不是搜索行为，不是所有中间推理步骤的容器，也不是整体影响记录。
 
-**Object:** a located contiguous passage actually inspected in the evaluated paper or an external source. It records what the source says, not whether the reviewer agrees with it.
+字段：
 
-| Field | Type / default | Meaning |
-|---|---|---|
-| `location` | required string | PDF page plus section/table/equation; webpage section or stable passage locator |
-| `excerpt` | required string | Exact contiguous excerpt; put paraphrase/reasoning in analytical records |
-| `purpose` | required string | What this passage establishes or challenges; not generic "support review" |
-| `kind` | `paper` | `paper` for evaluated manuscript; `external` for other sources |
-| `title` | string | Source identity |
-| `authors` | string array | Available source authors; do not invent missing metadata |
-| `doi` | string | DOI when present |
-| `url` | string | Actual inspected source URL; required for verified external evidence |
-| `version` | string | Exact inspected external version; required when verified external |
-| `available_date` | date / null | Date this substantive version was available, ISO YYYY-MM-DD |
-| `date_basis` | string | How version availability was established |
-| `status` | `partial` | Status below; verified eligibility is also checked by audit |
-| `search_ids` | S array | Retrieval provenance where applicable |
-| `accessed_at` | string | Actual access time; CLI supplies current UTC when absent |
+| 字段 | 内容 |
+|---|---|
+| target_id | K 或 X 的编号 |
+| dimension | increment_identification、correctness、novelty、value、rationality 或 presence |
+| question | 当前要裁决的具体问题 |
+| status | 该维度允许的结论状态 |
+| reason | 从来源证据到结论的完整说明 |
+| evidence_refs | 支持、限制和反驳证据编号 |
+| counter_evidence_refs | 主动检查的相反证据编号 |
+| unresolved | 尚未解决的替代解释、缺失步骤或访问限制 |
+| cutoff | 使用的评价截止点 |
 
-States: `partial` means incomplete identity/version/text/verification; `verified` means inspected passage and required eligibility are established; `not_accessible` means the source could not be read; `provider_error` means tool/provider failure; `excluded` means inadmissible version/date or otherwise excluded, with reason in `purpose`. Failed-source E may have an empty excerpt and access locator, but cannot ground a substantive final finding.
+未调查使用 unchecked。已调查但不能裁决使用 unknown，并且必须有实际 E、S 或失败记录。新证据改变结论时更新同一评估目标并保留历史。
 
-Paper verified excerpts must match paper.md ignoring whitespace; a claimed page is checked against page markers. Inspect extraction problems in the original PDF and keep the record partial rather than fabricating a matching quote. External verified E needs URL, version, location, excerpt, date basis and available_date <= cutoff. A metadata page can verify metadata only; use source text for scientific claims. Verified means admissible evidence, not that its conclusion is scientifically true or that it supports every attached judgment.
+### 整体影响记录（I）
 
-Keep partial/excluded E in the working log for retrieval limits. Do not leave an ineligible E in the support/counterevidence dependency chain of a final substantive point: the current validator follows those links and will reject the export. Represent the remaining limit in uncertainty/limitations; preserve the unsuccessful E/S in the working log. If that source is necessary to decide a claim, keep the claim unresolved rather than removing the link and pretending adequate support exists.
+I 是 Impact 的简称，记录已经核实的发现对综述知识用途和整体判断的影响。I 不重新裁决 K 或 X。
 
-## S - Search or access attempt
+字段：
 
-**Object:** one external retrieval action, or tightly connected search/open chain with the same question and outcome. Record the actual query and results after acting; split actions if outcomes/provenance differ.
+| 字段 | 内容 |
+|---|---|
+| finding | 已核实的具体发现 |
+| target_refs | 受影响的 K、X 或 A |
+| evidence_refs | 证明发现和影响的证据 |
+| direction | supports、qualifies、limits 或 harms |
+| extent | local、supporting、main 或 independent_quality |
+| effect | 对理解、比较、判断或研究使用的具体影响 |
+| reason | 证据 → 前提/推理改变 → 学术使用改变 |
+| status | established、uncertain 或 withdrawn |
+| overlaps | 共同根因或重复表现的 I 编号 |
+| uncertainty | 仍可能改变影响判断的未知事项 |
 
-| Field | Type / default | Meaning |
-|---|---|---|
-| `query` | required string | Actual query, URL request or source lookup; no retrospectively invented search |
-| `query_target` | required string | Which uncertainty this action was intended to resolve |
-| `tool` | required string | Tool/provider actually used |
-| `status` | required string | v2a: `success`, `partial`, `no_results`, `failed` |
-| `mode` | `unknown` | v2a: `live`, `cache`, `unknown`; cache does not count as new live access |
-| `urls` | string array | Returned/visited URLs relevant to the action |
-| `failure_reason` | string | Actual failure or unresolved retrieval limitation |
-| `executed_at` | string | Actual attempt time; CLI supplies current UTC if absent |
+extent 只描述影响范围，不代表严重程度。多个表现来自同一根因时，通过 overlaps 关联并在整体理由中合并说明。
 
-Success means retrieval succeeded, not that K/X/A was verified. `no_results` means a functioning search returned no useful result, not that the literature lacks it. `failed` means action/tool access failed, including denial before execution; state which. An attempt has no investigative lifecycle: a retry is a new S. Correct an incorrectly recorded outcome rather than rewriting history as a successful retry.
+### 检索事件（S）
 
-## Record lifecycle and permission to criticize
+S 是 Search 的简称，记录实际执行的外部搜索或访问尝试。S 不是来源证据；命中并实际查看的材料必须另建 E。
 
-The definitions and fields above are complemented by this lifecycle table. "Closed" means removed from the active agenda for the current scope/budget, not scientifically proved or permanently immutable. Reopen only on new evidence, changed access/scope, or a specific discovered omission in the previous investigation. Rejected records remain available for audit and do not become recurring tasks.
+字段：
 
-| Record | Create / update trigger | Closing condition / permitted transition | May it support criticism by itself? / relationship |
+| 字段 | 内容 |
+|---|---|
+| target_question | 本次检索要裁决的问题 |
+| query | 实际使用的查询或 URL |
+| tool | 实际使用的搜索或访问工具 |
+| status | success、no_results、partial、failed |
+| result_urls | 实际返回或访问的链接 |
+| checked_source_refs | 实际查看后创建的 E 编号 |
+| failure_reason | 失败、限制或无结果原因 |
+| searched_at | 实际时间 |
+
+没有结果不等于不存在前作或不存在预期知识。S 只说明搜索范围和执行结果。
+
+## 2. 记录生命周期
+
+所有记录都遵守以下生命周期：
+
+1. **创建：**对象已经能够用具体内容和位置描述时创建。
+2. **调查：**列出待裁决的问题和证据计划。
+3. **更新：**实际查看材料后更新同一编号；新证据不覆盖旧历史。
+4. **终结：**写入支持、拒绝、部分支持、未知或跳过理由。
+5. **重新打开：**只有新证据、依赖变化或状态冲突才重新打开；无新触发时不重复调查。
+
+CLI 不删除记录，不自动合并语义相近记录，不把未知字段当成已完成。
+
+## 3. 状态与动作表
+
+| 对象 | 当前状态 | 允许动作 | 完成条件 |
 |---|---|---|---|
-| K | Located candidate synthesis; update when its identity, premises or assessments change | Each relevant dimension moves unchecked -> evidence-based result or justified unknown. If the candidate proves reviewer-invented, revise its statement/reason as rejected candidate, explain in step and close its agenda item, remove from final contribution claims; do not assert the paper has it | No: a low label is not evidence or impact. E/A establish the relevant defect, I establishes its material significance |
-| D | A real discovery question or route attempt; update screening or coverage from actual work | Candidate -> X investigation (no duplicate screening task); satisfied/optional/out_of_scope/insufficient/no_candidate close after reasons; limited closes the blocked investigation after actual attempts. Unperformed screening stays pending in the run agenda, not a closed D | No: records the source and screening, not demonstrated obligation/absence; justified candidate can ground X |
-| X | Candidate D establishes a concrete reasonable expectation; update rationality/presence separately | Unchecked components -> justified/present/partial/absent or justified unknown; rejected necessity closes without searching for every absent detail. Confirmed unmet necessary component may become decision_relevant; satisfied -> not_missing and D satisfied | Only as the omission finding after the stated necessity/presence gates; negative overall weight additionally needs I. X alone is never an automatic penalty |
-| A | Consequential inference identified; update after evidence, author response or counterevidence | Not-started unresolved -> actual audit; settled verdict closes that inference. Investigated unresolved can pause only with actual limits/conflict and a stopping reason. Four challenge outcomes and their updates are specified below | An evidenced A can substantiate a bounded scientific criticism; its global importance is a separate I judgment. Unresolved or withdrawn challenge cannot substantiate weakness |
-| I | An evidenced finding may change reliable synthesis/use; update when support, scope or overlap changes | Uncertain -> established when link is justified; may close uncertain after a bounded inconclusive investigation, with no decisive weight. Refuted premise -> uncertain + withdrawn reason, removed from decisive refs | Can express material impact only with eligible underlying records and reasoning; repeats of K or severity words are insufficient |
-| E | A passage/source inspection; update missing verification details, not source history | Partial -> verified after required checks, or excluded/not_accessible/provider_error with actual reason. A changed source version is a new E, not replacement of old excerpt | No: excerpt is a factual premise, not a normative defect or quality weight. A demonstrated text contradiction still needs the inference stated |
-| S | Actual external search/access attempt; correct recording errors only | The attempt ends success/partial/no_results/failed with outcome. Retry is new S; planned searches remain agenda items, not S | No: source discovery or failed retrieval does not prove correctness, novelty, obligation or absence |
+| 候选知识单元 | 新建或 unchecked | add_knowledge；update_knowledge；为每个维度运行 assess | 内容、范围、出处、拆分理由已记录；知识增量识别有结论，其他必评维度有结论或跳过理由 |
+| 预期知识项 | pending 或 unchecked | add_expectation；update_expectation；先判断合理性，再检查全文覆盖 | rationality 和 presence 分别有结论；仅确认合理且缺失时进入遗漏影响 |
+| 来源证据 | 新建 | add_evidence | 来源版本、精确位置、摘录、用途和截止点状态齐全 |
+| 评估记录 | unchecked | assess 更新同一目标/维度 | 支持、有限支持、反证、证据不足或跳过理由有证据 |
+| 整体影响记录 | 新建或 uncertain | add_impact；update_impact | 找到具体受影响结果、影响理由、共同根因和不确定性 |
+| 检索事件 | 新建 | record_search | 查询、工具、状态、时间和失败原因均反映真实执行 |
 
-### Action table for unsettled and closed work
+优先级遵循：可能推翻中心结果的证据问题，能够改变多个重要判断的共享前提，可能显著改变总体判断的正面结果，预期知识覆盖，最后是低影响覆盖。中心性、不确定性和决策相关性分别记录，不能相互替代。
 
-| Observed state / condition | Next action | Completion condition | Allowed update / active agenda |
-|---|---|---|---|
-| K dimension unchecked | Run the matching correctness, increment or value branch | Discriminating evidence considered or actual access/budget limit identified | Assessed value or justified unknown; other unchecked dimensions remain pending |
-| A unresolved, investigation not started | Identify the premise/alternative and inspect planned manuscript/source locations | At least the relevant inference and its evidence were actually examined | Resolved verdict or investigated unresolved; still active if a feasible next test remains |
-| A unresolved, inspected evidence insufficient | Name missing fact, try a feasible alternative retrieval/inspection | Retrieval attempts and stop reason documented | Remains unresolved with evidence_limited reason; close/park only if no productive current action, reopen on changed access/evidence |
-| A unresolved, evidence conflicts | Compare definitions/conditions/versions; target the observation that distinguishes accounts | Conflict resolved or its unresolved discriminator and investigation bounds recorded | Settled verdict, or conflict_unresolved with explicit parked reason; no negative factual conclusion from conflict alone |
-| D candidate, X not created | Create X with screening grounds | X ID exists with pending presence/necessity work | Keep D candidate as provenance, queue X once |
-| D rejected/satisfied/no_candidate after screening | No further action without a reopening trigger | Outcome and actual grounds/coverage recorded | Closed; retention is not a pending task |
-| D limited after actual attempt | Report failed route and substantive consequence | S/step or other actual access evidence plus missing stage recorded | Closed as limited for this run; retry only on a stated new opportunity |
-| X key necessity/presence unchecked | Investigate the missing prerequisite, not arbitrary extra detail | Gates below satisfied, rejected or genuinely unresolvable | Relevant states change; incidental uncertainty may remain without blocking |
-| I uncertain | Test factual support separately from the impact link | Effect justified, withdrawn, or bounded investigation inconclusive | Established, or close uncertain with explicit reason; no decisive use while uncertain |
-| Assessed unknown without actual actions/reason | Restore an unfinished assessment-status component to unchecked; if the field has no unchecked value, retain its default unknown and an explicit pending action | Evidence is investigated rather than merely relabeled | Pending, not closed unknown |
-| Assessed unknown with actual actions, but a clear untried feasible discriminator | Add that specific next action | Test performed or actual constraint established | Remains pending; unknown wording does not excuse stopping early |
-| Assessed unknown with documented bounded search and no productive current test | Preserve reason and possible overall effect | Actual work and limit auditable | Closed for this run, not automatically repeated; reopen only with new basis |
+## 4. 命令
 
-These process distinctions use existing `investigation`, `reason`, `uncertainty`, `next_question`, the run agenda and step text. They are not new CLI fields or verdict enums. For A, begin `investigation` with `not_started:` before work, or `performed:` plus actual actions afterward; explain `evidence_limited` or `conflict_unresolved` in uncertainty when relevant. Put a pending next action or a parked stop reason there. The method does not pretend that unknown proves sufficient scholarly inquiry.
+所有命令都从运行目录读取 review_log.json。创建命令接受 JSON 文件；更新命令只更新文件中出现的字段。命令失败返回非零状态，不写入部分状态。
 
+### 初始化和查看
 
-## Choosing the right type
-
-| What you have | Use | Boundary |
-|---|---|---|
-| "Authors say this method family improves efficiency" | E for the quoted assertion; K if synthesis, otherwise its role in an existing K/A | Author wording is not proof; no standalone local-claim class |
-| "Does the cost table include training?" | Existing K/A uncertainty and next action; run agenda if not yet attached | Local uncertainty, not an established weakness |
-| "This synthesis relates method families to evidence quality" | K | Must be supplied by the paper, not completed by reviewer |
-| "Field sources expose a potentially important unresolved comparison" | D | Screen before expecting this survey to supply it |
-| "This promised comparison reasonably requires compatible cost definitions" | X after candidate D | Reasonable obligation and presence investigated separately |
-| "Compared studies count incompatible resources" | E passages + A | Inference result; still explain scope and author's response |
-| "This prevents a general efficiency ranking but preserves the taxonomy" | I | Impact on understanding/use, not an independent data point |
-| Search produced sources / hit network denial | S | Retrieval record, not scientific support |
-| Exact inspected source passage | E | Quote/locator, not a judgment |
-| Reading plan, coverage or an unscreened lead | Run metadata below | Execution information without evidence IDs; never an independent criticism |
-
-## Run metadata and history: not additional review records
-
-New v2a work uses exactly K/X/D/A/I/E/S as its review-record taxonomy. Maintain one small `inputs/run_context.md` with the host's file-edit tool for execution information that is not itself a review finding. The current CLI does not create, load, validate or render this file. Read it alongside `show`, update affected rows after each iteration, and preserve actual completed actions in the existing step files.
-
-| Section in run_context.md | Minimal content | Update / closure |
-|---|---|---|
-| Task | Requested evaluation objective and scale or qualitative task; manuscript topic/type/scope/use; actual budget and prior-review exposure | Fix at initialization; record any explicit scope change. Cutoff/version remain authoritative in review_log.context, not a second editable date here |
-| Coverage | Location; `not_visited`, `visited_processed` or `unavailable`; substantive content processed; assessment consequence or why none; related record IDs; actual limit | After actual reading/access. Unread stays not_visited; unavailable states attempted route and possible judgment effect. Neither counts as completed coverage |
-| Agenda | Question or discovery route; existing target IDs if any; next action; pending/parked/closed; actual reason and reopening trigger if parked | Merge semantically repeated questions. If a target is identifiable, use its existing fields as canonical and retain only the action pointer here. On promotion to K/D/A or closure, record the outcome/IDs and stop requeuing |
-| Access/trace limits | Actual tools/budget bounds and any available host-trace producer, session, format/path; known missing traces | Update from actual access events; raw host events remain separate from agent-reported steps |
-
-These rows receive no new record prefix or citable finding ID. They organize work and disclose limits; final substantive strengths/weaknesses still require evidence-backed records among the seven. A source assertion belongs in E and its role in K/A; an attached question belongs in the target's uncertainty/next action. An established independent trust/use issue can use E and I.independent_quality without manufacturing K; an untested suspicion remains an agenda item.
-
-The final review's `questions` section is an output section; use its `evidence_refs` to link the relevant records among the seven.
-
-## Operating the log
-
-### Initialize, context and view
-
-```text
-python <skill>/scripts/review_cli.py init "<paper.pdf>" --publication-date YYYY-MM-DD --date-basis "Actual basis" --conference iclr
-python <skill>/scripts/review_cli.py --dir <run> context --file <run>/inputs/context_new.json
+~~~
+python <skill>/scripts/review_cli.py init "<paper>" --output-parent "<existing run parent>" --publication-date YYYY-MM-DD --date-basis "actual basis" --conference iclr
 python <skill>/scripts/review_cli.py --dir <run> show --detailed
-```
+~~~
 
-Context payload fields: `publication_date`, `date_basis`, `version`, `date_uncertainty`. Init also records original path/hash and extracted-text hash. Record evaluation scope, proxy scale if any and budget in `inputs/run_context.md`; there is no dedicated task-config command.
+初始化生成 paper.md、input_manifest.json、review_log.json、inputs/ 和 sources/。`--output-parent` 必须指向已有目录；省略时使用论文所在目录。运行目录必须是 `review_<paper filename without final extension>`，目标目录存在时初始化失败，避免覆盖已有运行。
 
-### Create or update the seven records
+### 创建与更新记录
 
-```text
-python <skill>/scripts/review_cli.py --dir <run> put evidence --file <run>/inputs/evidence_new.json
-python <skill>/scripts/review_cli.py --dir <run> put search --file <run>/inputs/search_new.json
-python <skill>/scripts/review_cli.py --dir <run> put contribution --file <run>/inputs/contribution_new.json
-python <skill>/scripts/review_cli.py --dir <run> put discovery --file <run>/inputs/discovery_new.json
-python <skill>/scripts/review_cli.py --dir <run> put expectation --file <run>/inputs/expectation_new.json
-python <skill>/scripts/review_cli.py --dir <run> put audit --file <run>/inputs/audit_new.json
-python <skill>/scripts/review_cli.py --dir <run> put impact --file <run>/inputs/impact_new.json
-```
+~~~
+python <skill>/scripts/review_cli.py --dir <run> add_knowledge --file <payload.json>
+python <skill>/scripts/review_cli.py --dir <run> update_knowledge --id K1 --file <patch.json>
+python <skill>/scripts/review_cli.py --dir <run> add_expectation --file <payload.json>
+python <skill>/scripts/review_cli.py --dir <run> update_expectation --id X1 --file <patch.json>
+python <skill>/scripts/review_cli.py --dir <run> add_evidence --file <payload.json>
+python <skill>/scripts/review_cli.py --dir <run> assess --file <payload.json>
+python <skill>/scripts/review_cli.py --dir <run> record_search --file <payload.json>
+python <skill>/scripts/review_cli.py --dir <run> add_impact --file <payload.json>
+python <skill>/scripts/review_cli.py --dir <run> update_impact --id I1 --file <patch.json>
+~~~
 
-Use the returned actual ID for subsequent references. Payload names may use their assigned IDs after creation. Reusing a `_new` payload file is allowed only after its content has actually been replaced with the next operation; preserve useful provenance when practical. Use `inputs/<kind>_<ID>.json` for patches.
+专属命令保持参数边界清楚：新增、更新、评估和检索行为不能通过一个任意 put 入口混在一起。内部实现可以共享 JSON 读取、ID 检查、引用检查和保存代码。
 
-Minimal candidate K payload (not final assessment):
+### 调查轨迹和最终评语
 
-```json
-{"statement":"The survey organizes methods by their execution mechanism and relates each family to available evidence","paper_locations":["Section 3, pp. 5-7","Fig. 2"],"correctness_status":"unchecked","increment_status":"unchecked","significance_status":"unchecked","centrality":"main","reason":"The introduction identifies this organization as a principal output"}
-```
-
-Unresolved A payload, assuming K1 exists:
-
-```json
-{"target":"K1","inference":"The proposed organizing dimensions support the manuscript's stated comparison","author_response":"Not yet checked; inspect definitions, examples and limitations","investigation":"not_started: inspect the definition, examples and claimed use","verdict":"unresolved","reason":"Need to verify what the taxonomy claims before challenging overlaps"}
-```
-
-Patch after actual investigation (illustrative IDs must already exist; replace prose with actual evidence):
-
-```json
-{"id":"A1","evidence_ids":["E1","E2"],"author_response":"The taxonomy is explicitly complementary, not disjoint","investigation":"performed: read taxonomy definition, examples, table and limitations; found no exclusivity claim or demonstrated assignment conflict","verdict":"not_warranted","reason":"refuted_by_counterevidence: the challenge assumed exclusivity, whereas the inspected definition states complementary categories; no separate assignment conflict was established","uncertainty":"Other mapping errors were not exhaustively checked"}
-```
-
-This rejects the specific challenge. It does not by itself establish high value or global correctness for K1. No negative I follows merely from the rejected overlap objection.
-
-### Payload shapes for the remaining types
-
-The following are **syntax templates, not research evidence**. Replace bracketed values with actual inspected content, dates and URLs, and replace IDs with those returned in your run. Referenced records must already exist. Never persist these placeholders as verified findings. K and A shapes are illustrated above.
-
-E, manuscript passage:
-
-```json
-{"kind":"paper","location":"p. 5, Section 3, Table 2","excerpt":"[Exact contiguous text actually inspected]","purpose":"[Which premise this establishes]","status":"partial"}
-```
-
-S, an actual unsuccessful attempt:
-
-```json
-{"query":"[Actual query or requested URL]","query_target":"[Question being investigated]","tool":"[Tool actually called]","mode":"live","status":"failed","urls":[],"failure_reason":"[Actual tool failure or denial]"}
-```
-
-D, a screened manuscript candidate:
-
-```json
-{"route":"manuscript","question":"[Concrete synthesis required by the located promise]","basis_evidence_ids":["E1"],"search_ids":[],"scope_and_use":"[Scope and material use]","possible_synthesis":"[Feasible response from available studies]","disposition":"candidate","reason":"[Why all four screening questions pass]","checked_locations":[],"uncertainty":"Presence not yet checked"}
-```
-
-X, created from that candidate but not yet an omission:
-
-```json
-{"expectation":"[Concrete expected understanding]","origins":["author_promise"],"basis_evidence_ids":["E1"],"scope":"[Justified survey remit]","discovery_ids":["D1"],"necessity":"required","independence_reason":"[Why the obligation is grounded rather than a preference]","tier":"exploratory","rationality_status":"justified","presence_status":"unchecked","missing_status":"unchecked","next_question":"Where does the manuscript supply an equivalent response?"}
-```
-
-I, only after finding and effect are checked:
-
-```json
-{"finding":"[Established positive or negative finding]","target_refs":["K1"],"evidence_refs":["A1","E1"],"scholarly_use":"[Specific use]","direction":"qualifies","extent":"main","reason":"[What changes about the contribution and why; what remains valid]","status":"established","overlaps":[],"uncertainty":"[Remaining bounded uncertainty]"}
-```
-
-For the I template, A1 must actually establish the stated qualification. The earlier `not_warranted` A example would not justify inventing such a negative effect; examples are alternative payload shapes, not an automatically valid chain.
-
-### Run control and investigation trajectory
-
-Create/update `inputs/run_context.md` with the host's file-edit tool using the sections above. No new CLI command is implied. After actual investigation and record updates, write the step:
-
-```text
-python <skill>/scripts/review_cli.py --dir <run> step --target "K1,A1" --why "Why this is next" --action "Actual inspected locations/tools" --found "Observed evidence and remaining uncertainty" --ops "put evidence E1; put audit A1"
-```
-
-Use `Section 3` for manuscript sections, not S (which also names search records). `Table 2`, `Fig. 3` and PDF page numbers are explicit locators. `step` is mandatory in this v2a procedure after each actual investigation, although optional in the inherited CLI.
-
-### Review points and overall judgment
-
-Point payload:
-
-```json
-{"text":"A specific finding, its manuscript location and why it matters","evidence_refs":["I1"]}
-```
-
-```text
-python <skill>/scripts/review_cli.py --dir <run> point --section strengths --file <run>/inputs/point_new.json
-```
-
-Other sections: `weaknesses`, `questions`, `comments`. `point` appends; it does not update an earlier point. Draft only after investigation, and check for duplicates before adding. Place IDs in reference fields, not as handwritten evidence tags in text.
-
-#### Outline-revision limitation
-
-The inherited `point` and list-section `outline` commands append; updating A/I does **not** revise their old outline wording, and `finalize` is not a semantic withdrawal operation. Do not append a rebuttal while retaining the obsolete weakness. Normally finish adjudication before drafting points. If subsequent evidence reopens an already drafted finding:
-
-1. Preserve the former verdict, affected A/K/X/I and outline text in an input snapshot before updating; update the canonical finding and its dependent impacts through existing `put` operations. Record the completed changes in the subsequent step, following the normal loop order.
-2. Use the host's structured file-edit capability for this narrow maintenance case: read `review_log.json`, locate the exact obsolete item under `review_outline.strengths`, `weaknesses`, `questions` or `comments`, and save its before/after text and references, affected section/index, reason and time in `inputs/outline_revision_<unique-id>.json`. Preserve all unrelated fields/items and IDs. Then remove or replace that exact list item. This is an explicit file edit, **not an existing CLI replace/remove command**, and not permission to reconstruct the whole log. Do not edit the rendered review as the source of truth.
-3. Reassess the overall reason/refs/scale reason using `judgment`, update the summary/score if their reasons changed, and record the maintenance operation in a new step. If a prior score can no longer be defended, explicitly set `review_outline.overall_score` to JSON null in the same tracked file edit; do not substitute an empty string or zero.
-4. Reload through `show`, run `audit`, inspect the final reference chain and render again with `finalize`. Check that no withdrawn premise survives through another point or the overall reason. Old exported text is obsolete until regenerated.
-
-A future minimal CLI replace/remove operation should encapsulate this tracked edit; it is a code change to implement, not a capability claimed by this proposal. Archive the before/after correction rather than deleting the evidence of the reviewer's mistake.
-
-Judgment payload:
-
-```json
-{"reason":"Reliable contributions; decisive limits and why they matter; remaining value; dependencies and overlap; uncertainty","refs":["I1","I2"],"scale_reason":"Why the requested category fits relative to adjacent categories, or qualitative task with no numerical scale","limitations":"Actual access, coverage and unresolved judgment limits; if no score, explain whether qualitative task or inability to decide"}
-```
-
-```text
-python <skill>/scripts/review_cli.py --dir <run> judgment --file <run>/inputs/judgment_new.json
-python <skill>/scripts/review_cli.py --dir <run> outline --section summary --content "What understanding this survey provides"
-python <skill>/scripts/review_cli.py --dir <run> outline --section overall_score --content 6
-python <skill>/scripts/review_cli.py --dir <run> audit
+~~~
+python <skill>/scripts/review_cli.py --dir <run> step --target "K1,A1" --why "why now" --action "actual reading/search" --found "actual result" --ops "add_evidence E1; assess A1"
+python <skill>/scripts/review_cli.py --dir <run> point --section strengths --file <point.json>
+python <skill>/scripts/review_cli.py --dir <run> outline --section summary --content "summary"
+python <skill>/scripts/review_cli.py --dir <run> judgment --file <judgment.json>
+python <skill>/scripts/review_cli.py --dir <run> validate
 python <skill>/scripts/review_cli.py --dir <run> finalize
-```
+~~~
 
-The score command is optional and shown only for a task using that valid category. Supported interfaces are currently iclr/icml/neurips/acl/emnlp; use inherited `set_conference <name>` to inspect labels. These are bundled interfaces, not a claim that their labels match every historical review form. Existing structural checks may require an inability-to-judge/limitations explanation when no score is set; explicitly identify a requested qualitative task rather than inventing uncertainty.
+step 只记录已经完成的调查；计划不能写成已完成动作。point 每次写一个 strength、weakness、question 或 comment，并使用 evidence_refs 关联已存在的记录。judgment 保存 overall_reason、overall_refs、scale_reason 和 limitations。
 
-### Files and completion
+## 5. 结构校验
 
-Final names: `review.md`, `audit_summary.md`; working files: `paper.md`, `input_manifest.json`, `review_log.json`, `steps.jsonl`, `steps.md`, `inputs/` and `sources/`. Every new run folder is `review_<full input stem>`; alternate parents separate repeats. Do not rename final review or alter the input text to make excerpts pass.
+validate 至少检查：
 
-Run control metadata is fixed at `inputs/run_context.md`; it is maintained by the host file tool, with the four sections above, and is not another final review or CLI record payload.
+- 必需的运行上下文和文件是否存在；
+- 每类记录的编号前缀、唯一性和 JSON 结构；
+- 所有 evidence_refs、assessment_refs、target_refs、search_refs、overlaps 和 overall_refs 是否指向已存在记录；
+- 更新目标是否存在；
+- 评估状态是否属于该维度允许的集合；
+- 每条 K 是否为四个维度分别记录结论或有理由的跳过；
+- 每个 unknown 是否留有调查证据或具体未决理由；
+- 未调查和已调查未知是否区分；
+- 截止点字段和来源版本是否存在；
+- 最终评语是否引用存在的记录。
 
-`steps.jsonl` is the agent's reported investigation sequence. If the host can export raw tool events, retain them separately under `inputs/host_trace_<unique-id>.<format>` or reference their actual external path. Record producer, run/session identity, format and availability in `inputs/run_context.md`. Do not fabricate missing host traces or present an agent-authored step as a host-confirmed action. Coverage metadata and steps report what was processed; their existence alone does not independently demonstrate execution, understanding or correct assessment.
+结构校验不能裁决知识增量是否真实、正确性是否成立、相对新颖性是否充分或价值判断是否合理。
 
-Audit validates IDs, basic structural completion, date eligibility and excerpt matching. It does not establish scientific correctness, expectation necessity, value, search recall or successful adherence to the investigation loop. Manually apply the workflow exit conditions and inspect rendered evidence links. The full log retains exploratory/rejected material; final review cites only the findings it actually uses.
-
+finalize 先运行完整校验。校验失败时不得写入或覆盖 review.md。成功后导出 review.md、Evidence appendix 和 audit_summary.md，并渲染 steps.md。
